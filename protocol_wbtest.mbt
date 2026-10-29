@@ -99,7 +99,7 @@ test "FlightInfo count handles known, absent and unknown values" {
 
 ///|
 test "gRPC message guard handles split prefixes, bodies, and empty messages" {
-  let validator = MessageGuard::new(QueryBudget::new(67108864))
+  let validator = MessageGuard::new()
   validator.push(b"\x00\x00")
   validator.push(b"\x00\x00\x03ab")
   validator.push(b"c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01z")
@@ -108,7 +108,7 @@ test "gRPC message guard handles split prefixes, bodies, and empty messages" {
 
 ///|
 test "gRPC message guard rejects oversized and truncated frames" {
-  let oversized = MessageGuard::new(QueryBudget::new(67108864))
+  let oversized = MessageGuard::new()
   oversized.push(b"\x00\x00\x40")
   let rejected = try {
     oversized.push(b"\x00\x01")
@@ -118,7 +118,7 @@ test "gRPC message guard rejects oversized and truncated frames" {
     _ => false
   }
   assert_true(rejected)
-  let partial = MessageGuard::new(QueryBudget::new(67108864))
+  let partial = MessageGuard::new()
   partial.push(b"\x00\x00\x00\x00\x02x")
   let truncated = try {
     partial.finish()
@@ -128,7 +128,7 @@ test "gRPC message guard rejects oversized and truncated frames" {
     _ => false
   }
   assert_true(truncated)
-  let partial_header = MessageGuard::new(QueryBudget::new(67108864))
+  let partial_header = MessageGuard::new()
   partial_header.push(b"\x00\x00")
   let header_truncated = try {
     partial_header.finish()
@@ -142,7 +142,7 @@ test "gRPC message guard rejects oversized and truncated frames" {
 
 ///|
 test "gRPC message guard rejects compression and accepts 4 MiB prefix" {
-  let compressed = MessageGuard::new(QueryBudget::new(67108864))
+  let compressed = MessageGuard::new()
   let rejected = try {
     compressed.push(b"\x01\x00\x00\x00\x00")
     false
@@ -151,22 +151,18 @@ test "gRPC message guard rejects compression and accepts 4 MiB prefix" {
     _ => false
   }
   assert_true(rejected)
-  let boundary = MessageGuard::new(QueryBudget::new(67108864))
+  let boundary = MessageGuard::new()
   boundary.push(b"\x00\x00\x40\x00\x00")
   assert_eq(boundary.remaining, 4194304)
 }
 
 ///|
-test "gRPC response limit counts all message prefixes and bodies" {
-  let budget = QueryBudget::new(12)
-  let validator = MessageGuard::new(budget)
-  validator.push(b"\x00\x00\x00\x00\x01a")
-  validator.finish()
-  let next_rpc = MessageGuard::new(budget)
-  next_rpc.push(b"\x00\x00\x00\x00\x01b")
-  next_rpc.finish()
+test "query response limit counts frames across RPCs" {
+  let budget = QueryBudget::new(25)
+  budget.charge(9 + 10)
+  budget.charge(6)
   let rejected = try {
-    next_rpc.push(b"\x00")
+    budget.charge(1)
     false
   } catch {
     FlightError::Rpc(8, "query responses exceed the configured byte limit") =>
@@ -278,7 +274,25 @@ test "HTTP2 response guard accepts control frames and rejects unexpected streams
     _ => false
   }
   assert_true(server_push)
-  f.check(
+  let repeated = try {
+    f.check(
+      @http2.Frame::Headers(
+        stream_id=1,
+        fragment=b"",
+        end_stream=false,
+        end_headers=false,
+        priority=None,
+        padding=0,
+      ),
+    )
+    false
+  } catch {
+    FlightError::Protocol("response trailers must end the stream") => true
+    _ => false
+  }
+  assert_true(repeated)
+  let partial_block = FrameGuard::new(1)
+  partial_block.check(
     @http2.Frame::Headers(
       stream_id=1,
       fragment=b"",
@@ -289,11 +303,65 @@ test "HTTP2 response guard accepts control frames and rejects unexpected streams
     ),
   )
   let interleaved = try {
-    f.check(@http2.Frame::Ping(payload=b"12345678", ack=false))
+    partial_block.check(@http2.Frame::Ping(payload=b"12345678", ack=false))
     false
   } catch {
     FlightError::Protocol(_) => true
     _ => false
   }
   assert_true(interleaved)
+}
+
+///|
+test "schema comparison checks nested fields but ignores custom metadata" {
+  assert_true(flight_info_schema(b"") is None)
+  let empty = @proto.PbWriter::new()
+  empty.bytes_(1, b"")
+  assert_true(flight_info_schema(empty.to_bytes()) is None)
+  let child = @arrow.Field::new("item", @arrow.DataType::Int64, nullable=false)
+  let baseline = [
+    @arrow.Field::new("items", @arrow.DataType::List, children=[child]),
+  ]
+  let with_metadata = [
+    @arrow.Field::new("items", @arrow.DataType::List, children=[child], metadata=[
+      { key: "note", value: Some("x"), },
+    ]),
+  ]
+  assert_true(fields_match(baseline, with_metadata))
+  let other_child = @arrow.Field::new(
+    "item",
+    @arrow.DataType::Int32,
+    nullable=false,
+  )
+  let different = [
+    @arrow.Field::new("items", @arrow.DataType::List, children=[other_child]),
+  ]
+  assert_false(fields_match(baseline, different))
+  let nullable_child = @arrow.Field::new(
+    "item",
+    @arrow.DataType::Int64,
+    nullable=true,
+  )
+  assert_false(
+    fields_match(baseline, [
+      @arrow.Field::new("items", @arrow.DataType::List, children=[
+        nullable_child,
+      ]),
+    ]),
+  )
+}
+
+///|
+test "response data before headers is rejected" {
+  let guarder = FrameGuard::new(1)
+  let rejected = try {
+    guarder.check(
+      @http2.Frame::Data(stream_id=1, data=b"", end_stream=false, padding=0),
+    )
+    false
+  } catch {
+    FlightError::Protocol("HTTP/2 data before response headers") => true
+    _ => false
+  }
+  assert_true(rejected)
 }

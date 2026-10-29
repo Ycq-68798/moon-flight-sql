@@ -61,6 +61,7 @@ jobs:
           trap 'stop_ipv6; stop_server' EXIT
           start_server
           moon run cmd/main --target native
+          moon run cmd/catalogs --target native
           moon run cmd/address --target native
           if python -c 'import socket; s=socket.socket(socket.AF_INET6); s.bind(("::1", 0)); s.close()' 2>/dev/null; then
             python tests/server.py --host ::1 --port 8816 > server-ipv6.log 2>&1 &
@@ -82,6 +83,15 @@ jobs:
           else
             echo 'IPv6 loopback unavailable; skipping IPv6 integration test'
           fi
+          stop_server
+          start_server --bad-catalog-schema
+          moon run cmd/catalogs_bad --target native
+          stop_server
+          start_server --empty-catalog
+          moon run cmd/catalogs_empty --target native
+          stop_server
+          start_server --schema-mismatch
+          moon run cmd/schema_mismatch --target native
           stop_server
           start_server --many
           moon run cmd/limit --target native
@@ -106,3 +116,20 @@ jobs:
           stop_server
           start_server --delay 1
           moon run cmd/timeout --target native
+      - name: Reject malformed and oversized response headers
+        shell: bash
+        run: |
+          python tests/header_attack.py --mode repeat --port 8817 > header-repeat.log 2>&1 &
+          repeat_pid=$!
+          python tests/header_attack.py --mode budget --port 8818 > header-budget.log 2>&1 &
+          budget_pid=$!
+          trap 'kill "$repeat_pid" "$budget_pid" 2>/dev/null || true' EXIT
+          for i in {1..100}; do
+            if grep -q ready header-repeat.log && grep -q ready header-budget.log; then break; fi
+            sleep 0.1
+          done
+          grep -q ready header-repeat.log
+          grep -q ready header-budget.log
+          moon run cmd/header_guard --target native
+          wait "$repeat_pid"
+          wait "$budget_pid"

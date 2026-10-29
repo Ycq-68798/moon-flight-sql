@@ -71,6 +71,50 @@ pub async fn Client::query(
   timeout_ms~ : Int32 = 30000,
   metadata~ : Array[Metadata] = [],
 ) -> Array[@arrow.IpcData] {
+  self.execute_descriptor(statement_descriptor(sql), timeout_ms~, metadata~)
+}
+
+///|
+/// List catalog names using the standard Flight SQL CommandGetCatalogs.
+/// The returned schema and non-null UTF-8 values are checked before return.
+pub async fn Client::catalogs(
+  self : Client,
+  timeout_ms~ : Int32 = 30000,
+  metadata~ : Array[Metadata] = [],
+) -> Array[String] {
+  let parts = self.execute_descriptor(
+    catalogs_descriptor(),
+    timeout_ms~,
+    metadata~,
+  )
+  let names = []
+  for part in parts {
+    let fields = part.schema.fields
+    if fields.length() != 1 ||
+      fields[0].name != "catalog_name" ||
+      fields[0].data_type != @arrow.DataType::Utf8 ||
+      fields[0].nullable {
+      raise FlightError::Protocol("invalid Flight SQL catalog schema")
+    }
+    for batch in part.batches {
+      for i in 0..<batch.num_rows {
+        match batch.get_row(i) {
+          [Some(@arrow.Value::Utf8Value(name))] => names.push(name)
+          _ => raise FlightError::Protocol("invalid Flight SQL catalog value")
+        }
+      }
+    }
+  }
+  names
+}
+
+///|
+async fn Client::execute_descriptor(
+  self : Client,
+  descriptor : Bytes,
+  timeout_ms~ : Int32,
+  metadata~ : Array[Metadata],
+) -> Array[@arrow.IpcData] {
   if self.busy {
     raise FlightError::Protocol("concurrent queries are not supported")
   }
@@ -82,7 +126,7 @@ pub async fn Client::query(
   let budget = QueryBudget::new(self.channel.max_query_bytes)
   let info = self.channel.call(
     "/arrow.flight.protocol.FlightService/GetFlightInfo",
-    statement_descriptor(sql),
+    descriptor,
     timeout_millis=timeout_ms,
     metadata=headers,
     budget~,
@@ -95,6 +139,11 @@ pub async fn Client::query(
   }
   let expected = total_records(info.messages[0])
   let endpoints = decode_endpoints(info.messages[0])
+  let mut expected_schema : @arrow.Schema? = match
+    flight_info_schema(info.messages[0]) {
+    Some(bytes) => Some(@arrow.StreamReader::new(bytes).schema)
+    None => None
+  }
   let result = []
   let mut actual = 0L
   for endpoint in endpoints {
@@ -114,6 +163,15 @@ pub async fn Client::query(
       raise FlightError::Rpc(reply.grpc_status, reply.grpc_message)
     }
     let data = @arrow.read_stream(flight_data_to_ipc(reply.messages))
+    match expected_schema {
+      Some(schema) =>
+        if !fields_match(schema.fields, data.schema.fields) {
+          raise FlightError::Protocol(
+            "Flight endpoint schema differs from FlightInfo or other endpoints",
+          )
+        }
+      None => expected_schema = Some(data.schema)
+    }
     for batch in data.batches {
       if actual > 9223372036854775807L - batch.num_rows.to_int64() {
         raise FlightError::Protocol("result row count overflow")

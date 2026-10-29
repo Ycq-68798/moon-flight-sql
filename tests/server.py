@@ -14,6 +14,7 @@ import pyarrow.flight as flight
 
 
 QUERY_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandStatementQuery"
+CATALOGS_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetCatalogs"
 TICKET_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.TicketStatementQuery"
 QUERY = "SELECT id, name FROM items ORDER BY id"
 SCHEMA = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.string())])
@@ -83,32 +84,42 @@ class TokenMiddleware(flight.ServerMiddlewareFactory):
 
 
 class TestFlightSqlServer(flight.FlightServerBase):
-    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0, host="127.0.0.1"):
+    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0, host="127.0.0.1", bad_catalog_schema=False, schema_mismatch=False, empty_catalog=False):
         middleware = {"auth": TokenMiddleware(token)} if token is not None else None
         bind_host = f"[{host}]" if ":" in host else host
         super().__init__(f"grpc://{bind_host}:{port}", middleware=middleware)
         self.host = bind_host
-        self.tickets = set()
+        self.tickets = {}
         self.large = large
         self.medium = medium
         self.many = many
         self.multi = multi
         self.unknown_count = unknown_count
         self.delay = delay
+        self.bad_catalog_schema = bad_catalog_schema
+        self.schema_mismatch = schema_mismatch
+        self.empty_catalog = empty_catalog
 
     def get_flight_info(self, context, descriptor):
         if self.delay:
             time.sleep(self.delay)
         try:
+            envelope = parse_fields(descriptor.command)
+            if envelope.get(1) == CATALOGS_TYPE:
+                if envelope.get(2, b"") != b"":
+                    raise ValueError("catalog command must be empty")
+                schema = pa.schema([pa.field("catalog_name", pa.string(), nullable=self.bad_catalog_schema)])
+                return flight.FlightInfo(schema, descriptor, [flight.FlightEndpoint(descriptor.command, [])], 0 if self.empty_catalog else 2, -1)
             query = unpack_any(descriptor.command, QUERY_TYPE)[1].decode("utf-8")
         except (KeyError, ValueError, UnicodeDecodeError) as exc:
             raise flight.FlightServerError(f"invalid SQL command: {exc}") from exc
         if query.strip().rstrip(";").upper() != QUERY.upper():
             raise flight.FlightServerError("unsupported SQL query")
         endpoints = []
-        for _ in range(2 if self.multi and query.strip().endswith(";") else 1):
+        count = 2 if self.schema_mismatch or (self.multi and query.strip().endswith(";")) else 1
+        for index in range(count):
             handle = uuid.uuid4().bytes
-            self.tickets.add(handle)
+            self.tickets[handle] = self.schema_mismatch and index == count - 1
             ticket = pack_any(TICKET_TYPE, field(1, handle))
             endpoints.append(flight.FlightEndpoint(ticket, []))
         total = -1 if self.unknown_count else (100 if self.many else (1 if self.large or self.medium else 4))
@@ -118,12 +129,18 @@ class TestFlightSqlServer(flight.FlightServerBase):
 
     def do_get(self, context, ticket):
         try:
+            envelope = parse_fields(ticket.ticket)
+            if envelope.get(1) == CATALOGS_TYPE:
+                schema = pa.schema([pa.field("catalog_name", pa.string(), nullable=self.bad_catalog_schema)])
+                rows = [] if self.empty_catalog else [{"catalog_name": "main"}, {"catalog_name": "warehouse"}]
+                batches = [pa.RecordBatch.from_pylist(rows, schema=schema)] if rows else []
+                return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(schema, batches))
             handle = unpack_any(ticket.ticket, TICKET_TYPE)[1]
         except (KeyError, ValueError) as exc:
             raise flight.FlightServerError(f"invalid ticket: {exc}") from exc
         if handle not in self.tickets:
             raise flight.FlightServerError("unknown or already used ticket")
-        self.tickets.remove(handle)
+        mismatch = self.tickets.pop(handle)
         if self.many:
             batches = [pa.RecordBatch.from_pylist([{"id": i, "name": "x"}], schema=SCHEMA) for i in range(100)]
             return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(SCHEMA, batches))
@@ -139,6 +156,10 @@ class TestFlightSqlServer(flight.FlightServerBase):
             rows = db.execute(QUERY).fetchall()
         finally:
             db.close()
+        if mismatch:
+            schema = pa.schema([pa.field("id", pa.int64()), pa.field("renamed", pa.string())])
+            batches = [pa.RecordBatch.from_pylist([{"id": row[0], "renamed": row[1]} for row in rows[i:i + 2]], schema=schema) for i in (0, 2)]
+            return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(schema, batches))
         batches = [pa.RecordBatch.from_pylist([{"id": row[0], "name": row[1]} for row in rows[i:i + 2]], schema=SCHEMA) for i in (0, 2)]
         return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(SCHEMA, batches))
 
@@ -172,6 +193,9 @@ def self_test(server, token=None):
         {"id": 1, "name": "alpha"}, {"id": 2, "name": None},
         {"id": 3, "name": "gamma"}, {"id": 4, "name": "delta"},
     ]
+    catalog_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(CATALOGS_TYPE, b"")), options=options)
+    assert catalog_info.schema.equals(pa.schema([pa.field("catalog_name", pa.string(), nullable=False)]))
+    assert client.do_get(catalog_info.endpoints[0].ticket, options=options).read_all().to_pylist() == [{"catalog_name": "main"}, {"catalog_name": "warehouse"}]
     try:
         client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(QUERY_TYPE, field(1, b"SELECT invalid"))), options=options)
     except flight.FlightServerError:
@@ -193,8 +217,11 @@ def main():
     parser.add_argument("--multi", action="store_true", help="send two endpoints for a query ending in semicolon")
     parser.add_argument("--unknown-count", action="store_true", help="report unknown total row count")
     parser.add_argument("--delay", type=float, default=0, help="delay GetFlightInfo by this many seconds")
+    parser.add_argument("--bad-catalog-schema", action="store_true", help="emit nonconforming nullable catalog schema")
+    parser.add_argument("--schema-mismatch", action="store_true", help="make the second endpoint use a different schema")
+    parser.add_argument("--empty-catalog", action="store_true", help="return no catalog names")
     args = parser.parse_args()
-    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay, args.host)
+    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay, args.host, args.bad_catalog_schema, args.schema_mismatch, args.empty_catalog)
     if args.self_test:
         try:
             self_test(server, args.token)

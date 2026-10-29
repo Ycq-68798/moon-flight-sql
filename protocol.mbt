@@ -12,15 +12,28 @@ pub extend FlightError with @debug.Debug::{to_repr}
 pub fn statement_descriptor(sql : String) -> Bytes {
   let statement = @proto.PbWriter::new()
   statement.string_(1, sql)
-  let any = @proto.PbWriter::new()
-  any.string_(
-    1, "type.googleapis.com/arrow.flight.protocol.sql.CommandStatementQuery",
+  command_descriptor(
+    "type.googleapis.com/arrow.flight.protocol.sql.CommandStatementQuery",
+    statement.to_bytes(),
   )
-  any.bytes_(2, statement.to_bytes())
+}
+
+///|
+fn command_descriptor(type_url : String, value : Bytes) -> Bytes {
+  let any = @proto.PbWriter::new()
+  any.string_(1, type_url)
+  any.bytes_(2, value)
   let descriptor = @proto.PbWriter::new()
   descriptor.enum_(1, 2)
   descriptor.bytes_(2, any.to_bytes())
   descriptor.to_bytes()
+}
+
+///|
+fn catalogs_descriptor() -> Bytes {
+  command_descriptor(
+    "type.googleapis.com/arrow.flight.protocol.sql.CommandGetCatalogs", b"",
+  )
 }
 
 ///|
@@ -102,6 +115,46 @@ fn total_records(data : Bytes) -> Int64 raise {
     raise FlightError::Protocol("invalid total_records in FlightInfo")
   }
   total
+}
+
+///|
+fn flight_info_schema(data : Bytes) -> Bytes? raise {
+  let reader = @proto.PbReader::new(data)
+  let mut schema : Bytes? = None
+  while !reader.eof() {
+    let (field, wire) = reader.read_tag()
+    if field == 1 && wire == LengthDelim {
+      let value = reader.read_bytes()
+      if !value.is_empty() {
+        schema = Some(value)
+      }
+    } else {
+      reader.skip(wire)
+    }
+  }
+  schema
+}
+
+///|
+/// Compare field structure while ignoring optional Arrow custom metadata.
+fn fields_match(
+  left : Array[@arrow.Field],
+  right : Array[@arrow.Field],
+) -> Bool {
+  if left.length() != right.length() {
+    return false
+  }
+  for i in 0..<left.length() {
+    let a = left[i]
+    let b = right[i]
+    if a.name != b.name ||
+      a.data_type != b.data_type ||
+      a.nullable != b.nullable ||
+      !fields_match(a.children, b.children) {
+      return false
+    }
+  }
+  true
 }
 
 ///|

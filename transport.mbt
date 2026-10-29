@@ -5,7 +5,6 @@
 priv struct MessageGuard {
   prefix : Array[Byte]
   mut remaining : Int32
-  budget : QueryBudget
 }
 
 ///|
@@ -20,8 +19,21 @@ fn QueryBudget::new(limit : Int32) -> QueryBudget {
 }
 
 ///|
-fn MessageGuard::new(budget : QueryBudget) -> MessageGuard {
-  { prefix: [], remaining: 0, budget, }
+fn QueryBudget::charge(
+  self : QueryBudget,
+  count : Int32,
+) -> Unit raise FlightError {
+  if count < 0 || count > self.limit - self.received {
+    raise FlightError::Rpc(
+      8, "query responses exceed the configured byte limit",
+    )
+  }
+  self.received += count
+}
+
+///|
+fn MessageGuard::new() -> MessageGuard {
+  { prefix: [], remaining: 0, }
 }
 
 ///|
@@ -29,12 +41,6 @@ fn MessageGuard::push(
   self : MessageGuard,
   data : Bytes,
 ) -> Unit raise FlightError {
-  if data.length() > self.budget.limit - self.budget.received {
-    raise FlightError::Rpc(
-      8, "query responses exceed the configured byte limit",
-    )
-  }
-  self.budget.received += data.length()
   let mut at = 0
   while at < data.length() {
     if self.remaining > 0 {
@@ -130,11 +136,12 @@ async fn SafeChannel::connect(
 priv struct FrameGuard {
   id : Int32
   mut in_headers : Bool
+  mut headers_seen : Bool
 }
 
 ///|
 fn FrameGuard::new(id : Int32) -> FrameGuard {
-  { id, in_headers: false, }
+  { id, in_headers: false, headers_seen: false, }
 }
 
 ///|
@@ -153,16 +160,24 @@ fn FrameGuard::check(
     }
   }
   match frame {
-    @http2.Frame::Headers(stream_id~, end_headers~, ..) => {
+    @http2.Frame::Headers(stream_id~, end_headers~, end_stream~, ..) => {
       if stream_id != self.id {
         raise FlightError::Protocol("unexpected HTTP/2 response stream")
       }
+      if self.headers_seen && !end_stream {
+        raise FlightError::Protocol("response trailers must end the stream")
+      }
+      self.headers_seen = true
       self.in_headers = !end_headers
     }
-    @http2.Frame::Data(stream_id~, ..) =>
+    @http2.Frame::Data(stream_id~, ..) => {
       if stream_id != self.id {
         raise FlightError::Protocol("unexpected HTTP/2 response stream")
       }
+      if !self.headers_seen {
+        raise FlightError::Protocol("HTTP/2 data before response headers")
+      }
+    }
     @http2.Frame::Continuation(..) =>
       raise FlightError::Protocol("unexpected HTTP/2 continuation")
     @http2.Frame::PushPromise(..) =>
@@ -195,7 +210,7 @@ async fn SafeChannel::pump(
   id : Int32,
   budget : QueryBudget,
 ) -> @rpcclient.CallReply {
-  let validator = MessageGuard::new(budget)
+  let validator = MessageGuard::new()
   let frame_guard = FrameGuard::new(id)
   while !self.engine.is_done(id) {
     let head = self.conn.read_exactly(9)
@@ -204,6 +219,8 @@ async fn SafeChannel::pump(
     if hdr.length > 16384 {
       raise FlightError::Protocol("HTTP/2 frame exceeds advertised limit")
     }
+    // Count the frame header and payload before reading or buffering the payload.
+    budget.charge(9 + hdr.length)
     let payload = self.conn.read_exactly(hdr.length)
     let buf = @buffer.Buffer()
     buf.write_bytes(head)

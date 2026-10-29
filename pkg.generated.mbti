@@ -25,6 +25,7 @@ pub struct Client {
   channel : SafeChannel
   mut busy : Bool
 }
+pub async fn Client::catalogs(Self, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[String]
 pub fn Client::close(Self) -> Unit
 pub async fn Client::connect(String, Int32, max_query_bytes? : Int32) -> Self
 pub async fn Client::query(Self, String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[@arrow.IpcData]

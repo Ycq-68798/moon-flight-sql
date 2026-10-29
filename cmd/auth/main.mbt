@@ -31,6 +31,12 @@ async fn run() -> Unit {
   guard results[0].batches[0].get_row(1)[1] is None else {
     fail("expected null value")
   }
+  let names = client.catalogs(metadata=[
+    { name: "authorization", value: "Bearer demo-token", },
+  ])
+  guard names is ["main", "warehouse"] else {
+    fail("expected authenticated catalogs")
+  }
   println(
     "PASS: missing and wrong token rejected; authenticated query returned two batches",
   )
