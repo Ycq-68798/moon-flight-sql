@@ -575,3 +575,196 @@ pub async fn Client::cross_reference(
     metadata~,
   )
 }
+
+///|
+/// XDBC type information returned by the server. Numeric code values are
+/// preserved as sent, including vendor-specific or future values.
+pub(all) struct XdbcTypeInfo {
+  type_name : String
+  data_type : Int32
+  column_size : Int32?
+  literal_prefix : String?
+  literal_suffix : String?
+  create_params : Array[String]?
+  nullable : Int32
+  case_sensitive : Bool
+  searchable : Int32
+  unsigned_attribute : Bool?
+  fixed_prec_scale : Bool
+  auto_increment : Bool?
+  local_type_name : String?
+  minimum_scale : Int32?
+  maximum_scale : Int32?
+  sql_data_type : Int32
+  datetime_subcode : Int32?
+  num_prec_radix : Int32?
+  interval_precision : Int32?
+} derive(Debug)
+
+///|
+pub extend XdbcTypeInfo with @debug.Debug::{to_repr}
+
+///|
+fn xdbc_descriptor(data_type : Int32?) -> Bytes {
+  let payload = @proto.PbWriter::new()
+  if data_type is Some(value) {
+    payload.int32(1, value)
+  }
+  command_descriptor(
+    "type.googleapis.com/arrow.flight.protocol.sql.CommandGetXdbcTypeInfo",
+    payload.to_bytes(),
+  )
+}
+
+///|
+fn xdbc_optional_int(value : @arrow.Value?) -> Int32? raise FlightError {
+  match value {
+    None => None
+    Some(@arrow.Value::Int32Value(v)) => Some(v)
+    _ => raise FlightError::Protocol("invalid Flight SQL metadata value")
+  }
+}
+
+///|
+fn xdbc_optional_bool(value : @arrow.Value?) -> Bool? raise FlightError {
+  match value {
+    None => None
+    Some(@arrow.Value::BooleanValue(v)) => Some(v)
+    _ => raise FlightError::Protocol("invalid Flight SQL metadata value")
+  }
+}
+
+///|
+fn xdbc_params(value : @arrow.Value?) -> Array[String]? raise FlightError {
+  match value {
+    None => None
+    Some(@arrow.Value::ListValue(items)) => {
+      let values = []
+      for item in items {
+        match item {
+          Some(@arrow.Value::Utf8Value(text)) => values.push(text)
+          _ => raise FlightError::Protocol("invalid Flight SQL metadata value")
+        }
+      }
+      Some(values)
+    }
+    _ => raise FlightError::Protocol("invalid Flight SQL metadata value")
+  }
+}
+
+///|
+/// Query supported XDBC types. Omission requests all types; explicit zero is
+/// sent as a filter, and negative standard XDBC codes are supported.
+pub async fn Client::xdbc_type_info(
+  self : Client,
+  data_type? : Int32,
+  timeout_ms~ : Int32 = 30000,
+  metadata~ : Array[Metadata] = [],
+) -> Array[XdbcTypeInfo] {
+  let result = self.execute_descriptor(
+    xdbc_descriptor(data_type),
+    timeout_ms~,
+    metadata~,
+  )
+  let schema = match result.schema {
+    Some(value) => value
+    None => raise FlightError::Protocol("missing Flight SQL metadata schema")
+  }
+  let expected : Array[(String, @arrow.DataType, Bool)] = [
+    ("type_name", @arrow.DataType::Utf8, false),
+    ("data_type", @arrow.DataType::Int32, false),
+    ("column_size", @arrow.DataType::Int32, true),
+    ("literal_prefix", @arrow.DataType::Utf8, true),
+    ("literal_suffix", @arrow.DataType::Utf8, true),
+    ("create_params", @arrow.DataType::List, true),
+    ("nullable", @arrow.DataType::Int32, false),
+    ("case_sensitive", @arrow.DataType::Boolean, false),
+    ("searchable", @arrow.DataType::Int32, false),
+    ("unsigned_attribute", @arrow.DataType::Boolean, true),
+    ("fixed_prec_scale", @arrow.DataType::Boolean, false),
+    ("auto_increment", @arrow.DataType::Boolean, true),
+    ("local_type_name", @arrow.DataType::Utf8, true),
+    ("minimum_scale", @arrow.DataType::Int32, true),
+    ("maximum_scale", @arrow.DataType::Int32, true),
+    ("sql_data_type", @arrow.DataType::Int32, false),
+    ("datetime_subcode", @arrow.DataType::Int32, true),
+    ("num_prec_radix", @arrow.DataType::Int32, true),
+    ("interval_precision", @arrow.DataType::Int32, true),
+  ]
+  if schema.fields.length() != expected.length() {
+    raise FlightError::Protocol("invalid Flight SQL metadata schema")
+  }
+  for i in 0..<expected.length() {
+    let field = schema.fields[i]
+    let (name, kind, nullable) = expected[i]
+    if field.name != name ||
+      field.data_type != kind ||
+      field.nullable != nullable {
+      raise FlightError::Protocol("invalid Flight SQL metadata schema")
+    }
+    if i == 5 {
+      if field.children.length() != 1 ||
+        field.children[0].data_type != @arrow.DataType::Utf8 ||
+        field.children[0].nullable ||
+        !field.children[0].children.is_empty() {
+        raise FlightError::Protocol("invalid Flight SQL metadata schema")
+      }
+    } else if !field.children.is_empty() {
+      raise FlightError::Protocol("invalid Flight SQL metadata schema")
+    }
+  }
+  let rows = []
+  for part in result.parts {
+    for batch in part.batches {
+      for i in 0..<batch.num_rows {
+        let row = batch.get_row(i)
+        match row {
+          [
+            Some(@arrow.Value::Utf8Value(name)),
+            Some(@arrow.Value::Int32Value(kind)),
+            column_size,
+            prefix,
+            suffix,
+            params,
+            Some(@arrow.Value::Int32Value(nullable)),
+            Some(@arrow.Value::BooleanValue(case_sensitive)),
+            Some(@arrow.Value::Int32Value(searchable)),
+            unsigned,
+            Some(@arrow.Value::BooleanValue(fixed)),
+            increment,
+            local_name,
+            min_scale,
+            max_scale,
+            Some(@arrow.Value::Int32Value(sql_type)),
+            subcode,
+            radix,
+            precision,
+          ] =>
+            rows.push({
+              type_name: name,
+              data_type: kind,
+              column_size: xdbc_optional_int(column_size),
+              literal_prefix: optional_text(prefix),
+              literal_suffix: optional_text(suffix),
+              create_params: xdbc_params(params),
+              nullable,
+              case_sensitive,
+              searchable,
+              unsigned_attribute: xdbc_optional_bool(unsigned),
+              fixed_prec_scale: fixed,
+              auto_increment: xdbc_optional_bool(increment),
+              local_type_name: optional_text(local_name),
+              minimum_scale: xdbc_optional_int(min_scale),
+              maximum_scale: xdbc_optional_int(max_scale),
+              sql_data_type: sql_type,
+              datetime_subcode: xdbc_optional_int(subcode),
+              num_prec_radix: xdbc_optional_int(radix),
+              interval_precision: xdbc_optional_int(precision),
+            })
+          _ => raise FlightError::Protocol("invalid Flight SQL metadata value")
+        }
+      }
+    }
+  }
+  rows
+}

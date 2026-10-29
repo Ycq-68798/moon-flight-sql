@@ -62,5 +62,15 @@ async fn run() -> Unit {
   guard cross_rejected else {
     fail("cross reference endpoint schema mismatch accepted")
   }
+  let xdbc_rejected = try {
+    let _ = client.xdbc_type_info()
+    false
+  } catch {
+    @flight.FlightError::Protocol(
+      "Flight endpoint schema differs from FlightInfo or other endpoints"
+    ) => true
+    _ => false
+  }
+  guard xdbc_rejected else { fail("XDBC endpoint schema mismatch accepted") }
   println("PASS: metadata endpoint schema mismatch rejected")
 }

@@ -56,5 +56,13 @@ async fn run() -> Unit {
     _ => false
   }
   guard bad_cross else { fail("invalid cross reference schema accepted") }
+  let bad_xdbc = try {
+    let _ = client.xdbc_type_info()
+    false
+  } catch {
+    @flight.FlightError::Protocol("invalid Flight SQL metadata schema") => true
+    _ => false
+  }
+  guard bad_xdbc else { fail("invalid XDBC schema accepted") }
   println("PASS: invalid metadata schemas rejected")
 }

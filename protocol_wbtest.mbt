@@ -423,6 +423,12 @@ fn test_command_payload(descriptor : Bytes) -> Bytes raise {
 
 ///|
 test "metadata commands preserve optional presence and repeated types" {
+  assert_eq(test_command_payload(xdbc_descriptor(None)), b"")
+  assert_eq(test_command_payload(xdbc_descriptor(Some(0))), b"\x08\x00")
+  assert_eq(
+    test_command_payload(xdbc_descriptor(Some(-5))),
+    b"\x08\xfb\xff\xff\xff\xff\xff\xff\xff\xff\x01",
+  )
   assert_eq(
     test_command_payload(
       cross_reference_descriptor("p", "f", None, None, None, None),
@@ -544,4 +550,18 @@ test "table schema decoder consumes exactly one IPC schema message" {
     }
     assert_true(rejected)
   }
+}
+
+///|
+test "XDBC creation parameter values reject null list elements" {
+  assert_true(xdbc_params(None) is None)
+  assert_true(xdbc_params(Some(@arrow.Value::ListValue([]))) is Some([]))
+  let rejected = try {
+    let _ = xdbc_params(Some(@arrow.Value::ListValue([None])))
+    false
+  } catch {
+    FlightError::Protocol("invalid Flight SQL metadata value") => true
+    _ => false
+  }
+  assert_true(rejected)
 }

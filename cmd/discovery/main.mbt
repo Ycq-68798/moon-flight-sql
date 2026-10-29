@@ -184,5 +184,22 @@ async fn run() -> Unit {
   guard local_refs.length() == 1 && local_refs[0].pk_key_name is None else {
     fail("cross reference empty presence or nullable values failed")
   }
+  let all_types = client.xdbc_type_info()
+  guard all_types.length() == 3 &&
+    all_types[0].type_name == "BIGINT" &&
+    all_types[0].data_type == -5 &&
+    all_types[0].create_params is None &&
+    all_types[0].auto_increment == Some(true) &&
+    all_types[1].create_params is Some([]) &&
+    all_types[2].create_params is Some(["length"]) &&
+    all_types[2].literal_prefix == Some("'") else {
+    fail("XDBC metadata values were decoded incorrectly")
+  }
+  guard client.xdbc_type_info(data_type=0).length() == 1 &&
+    client.xdbc_type_info(data_type=0)[0].type_name == "UNKNOWN" &&
+    client.xdbc_type_info(data_type=-5)[0].type_name == "BIGINT" &&
+    client.xdbc_type_info(data_type=99).is_empty() else {
+    fail("XDBC optional or negative type filter failed")
+  }
   println("PASS: schema, table, type and key discovery")
 }

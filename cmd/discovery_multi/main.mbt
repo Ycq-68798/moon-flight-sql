@@ -11,7 +11,8 @@ async fn run() -> Unit {
     client.primary_keys("orders").length() == 4 &&
     client.imported_keys("orders").length() == 2 &&
     client.exported_keys("customers").length() == 2 &&
-    client.cross_reference("customers", "orders").length() == 2 else {
+    client.cross_reference("customers", "orders").length() == 2 &&
+    client.xdbc_type_info().length() == 6 else {
     fail("metadata endpoints were not all read")
   }
   println("PASS: table types and primary keys from two endpoints")

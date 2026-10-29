@@ -13,7 +13,8 @@ async fn run() -> Unit {
     client.primary_keys("orders").is_empty() &&
     client.imported_keys("orders").is_empty() &&
     client.exported_keys("customers").is_empty() &&
-    client.cross_reference("customers", "orders").is_empty() else {
+    client.cross_reference("customers", "orders").is_empty() &&
+    client.xdbc_type_info().is_empty() else {
     fail("expected no endpoints")
   }
   println("PASS: empty schema and table metadata with no endpoints")

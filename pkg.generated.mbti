@@ -38,6 +38,7 @@ pub async fn Client::primary_keys(Self, String, catalog? : String, schema? : Str
 pub async fn Client::query(Self, String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[@arrow.IpcData]
 pub async fn Client::table_types(Self, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[String]
 pub async fn Client::tables(Self, catalog? : String, schema_pattern? : String, table_pattern? : String, table_types? : Array[String], include_schema? : Bool, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[TableInfo]
+pub async fn Client::xdbc_type_info(Self, data_type? : Int32, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[XdbcTypeInfo]
 
 pub(all) struct DatabaseSchema {
   catalog_name : String?
@@ -102,6 +103,29 @@ pub fn TableInfo::decode_schema(Self) -> @arrow.Schema? raise
 pub fn TableInfo::equal(Self, Self) -> Bool
 pub fn TableInfo::not_equal(Self, Self) -> Bool
 pub fn TableInfo::to_repr(Self) -> @debug.Repr
+
+pub(all) struct XdbcTypeInfo {
+  type_name : String
+  data_type : Int32
+  column_size : Int32?
+  literal_prefix : String?
+  literal_suffix : String?
+  create_params : Array[String]?
+  nullable : Int32
+  case_sensitive : Bool
+  searchable : Int32
+  unsigned_attribute : Bool?
+  fixed_prec_scale : Bool
+  auto_increment : Bool?
+  local_type_name : String?
+  minimum_scale : Int32?
+  maximum_scale : Int32?
+  sql_data_type : Int32
+  datetime_subcode : Int32?
+  num_prec_radix : Int32?
+  interval_precision : Int32?
+} derive(@debug.Debug)
+pub fn XdbcTypeInfo::to_repr(Self) -> @debug.Repr
 
 // Type aliases
 

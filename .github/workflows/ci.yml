@@ -28,7 +28,7 @@ jobs:
           moon update
           moon check --target native
           moon test --target native
-      - name: Exercise Flight SQL queries, metadata and schema decoding against PyArrow
+      - name: Exercise Flight SQL queries, XDBC metadata and schema decoding against PyArrow
         shell: bash
         run: |
           start_server() {
@@ -106,6 +106,9 @@ jobs:
           stop_server
           start_server --metadata-no-endpoints --bad-metadata-schema
           moon run cmd/discovery_bad --target native
+          stop_server
+          start_server --metadata-no-endpoints --bad-xdbc-child
+          moon run cmd/xdbc_bad_child --target native
           stop_server
           start_server --metadata-schema-mismatch
           moon run cmd/discovery_mismatch --target native

@@ -23,6 +23,7 @@ PRIMARY_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetPrimary
 IMPORTED_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetImportedKeys"
 EXPORTED_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetExportedKeys"
 CROSS_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetCrossReference"
+XDBC_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetXdbcTypeInfo"
 TICKET_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.TicketStatementQuery"
 QUERY = "SELECT id, name FROM items ORDER BY id"
 SCHEMA = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.string())])
@@ -61,7 +62,7 @@ def decode_metadata_request(data):
     return values
 
 
-def metadata_result(kind, request, bad_schema=False):
+def metadata_result(kind, request, bad_schema=False, bad_xdbc_child=False):
     args = decode_metadata_request(request)
     def optional(tag):
         return args[tag][-1] if tag in args else None
@@ -80,6 +81,28 @@ def metadata_result(kind, request, bad_schema=False):
     if kind == SCHEMAS_TYPE:
         schema = pa.schema([pa.field("catalog_name", pa.string()), pa.field("db_schema_name", pa.string(), nullable=False)])
         rows = [{"catalog_name": cat, "db_schema_name": name} for cat, name in schemas if matches_catalog(cat) and matches_pattern(name, optional(2))]
+    elif kind == XDBC_TYPE:
+        schema = pa.schema([
+            pa.field("type_name", pa.string(), nullable=False), pa.field("data_type", pa.int32(), nullable=False),
+            pa.field("column_size", pa.int32()), pa.field("literal_prefix", pa.string()), pa.field("literal_suffix", pa.string()),
+            pa.field("create_params", pa.list_(pa.field("item", pa.string(), nullable=bad_xdbc_child))),
+            pa.field("nullable", pa.int32(), nullable=False), pa.field("case_sensitive", pa.bool_(), nullable=False),
+            pa.field("searchable", pa.int32(), nullable=False), pa.field("unsigned_attribute", pa.bool_()),
+            pa.field("fixed_prec_scale", pa.bool_(), nullable=False), pa.field("auto_increment", pa.bool_()),
+            pa.field("local_type_name", pa.string()), pa.field("minimum_scale", pa.int32()), pa.field("maximum_scale", pa.int32()),
+            pa.field("sql_data_type", pa.int32(), nullable=False), pa.field("datetime_subcode", pa.int32()),
+            pa.field("num_prec_radix", pa.int32()), pa.field("interval_precision", pa.int32())])
+        candidates = [
+            ("BIGINT", -5, 19, None, None, None, 1, False, 3, False, False, True, None, 0, 0, -5, None, 10, None),
+            ("UNKNOWN", 0, None, None, None, [], 2, False, 0, None, False, None, None, None, None, 0, None, None, None),
+            ("VARCHAR", 12, 255, "'", "'", ["length"], 1, True, 3, None, False, None, None, None, None, 12, None, None, None),
+        ]
+        selected = optional(1)
+        if selected is not None:
+            selected &= 0xffffffff
+            if selected >= 0x80000000:
+                selected -= 0x100000000
+        rows = [dict(zip(schema.names, values)) for values in candidates if selected is None or values[1] == selected]
     elif kind == TYPES_TYPE:
         if request:
             raise ValueError("table types command must be empty")
@@ -210,7 +233,7 @@ class TokenMiddleware(flight.ServerMiddlewareFactory):
 
 
 class TestFlightSqlServer(flight.FlightServerBase):
-    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0, host="127.0.0.1", bad_catalog_schema=False, schema_mismatch=False, empty_catalog=False, catalog_no_endpoints=False, bad_metadata_schema=False, metadata_schema_mismatch=False, metadata_no_endpoints=False):
+    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0, host="127.0.0.1", bad_catalog_schema=False, schema_mismatch=False, empty_catalog=False, catalog_no_endpoints=False, bad_metadata_schema=False, metadata_schema_mismatch=False, metadata_no_endpoints=False, bad_xdbc_child=False):
         middleware = {"auth": TokenMiddleware(token)} if token is not None else None
         bind_host = f"[{host}]" if ":" in host else host
         super().__init__(f"grpc://{bind_host}:{port}", middleware=middleware)
@@ -229,6 +252,7 @@ class TestFlightSqlServer(flight.FlightServerBase):
         self.bad_metadata_schema = bad_metadata_schema
         self.metadata_schema_mismatch = metadata_schema_mismatch
         self.metadata_no_endpoints = metadata_no_endpoints
+        self.bad_xdbc_child = bad_xdbc_child
         self.metadata_tickets = {}
 
     def get_flight_info(self, context, descriptor):
@@ -236,9 +260,9 @@ class TestFlightSqlServer(flight.FlightServerBase):
             time.sleep(self.delay)
         try:
             envelope = parse_fields(descriptor.command)
-            if envelope.get(1) in (SCHEMAS_TYPE, TABLES_TYPE, TYPES_TYPE, PRIMARY_TYPE, IMPORTED_TYPE, EXPORTED_TYPE, CROSS_TYPE):
+            if envelope.get(1) in (SCHEMAS_TYPE, TABLES_TYPE, TYPES_TYPE, PRIMARY_TYPE, IMPORTED_TYPE, EXPORTED_TYPE, CROSS_TYPE, XDBC_TYPE):
                 kind, request = envelope[1], envelope.get(2, b"")
-                schema, rows = metadata_result(kind, request, self.bad_metadata_schema)
+                schema, rows = metadata_result(kind, request, self.bad_metadata_schema, self.bad_xdbc_child)
                 endpoints = []
                 for index in range(0 if self.metadata_no_endpoints else (2 if self.metadata_schema_mismatch or self.multi else 1)):
                     ticket = b"metadata:" + uuid.uuid4().bytes
@@ -272,7 +296,7 @@ class TestFlightSqlServer(flight.FlightServerBase):
         try:
             if ticket.ticket in self.metadata_tickets:
                 kind, request, mismatch = self.metadata_tickets.pop(ticket.ticket)
-                schema, rows = metadata_result(kind, request, self.bad_metadata_schema or mismatch)
+                schema, rows = metadata_result(kind, request, self.bad_metadata_schema or mismatch, self.bad_xdbc_child)
                 batches = [pa.RecordBatch.from_pylist(rows, schema=schema)] if rows else []
                 return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(schema, batches))
             envelope = parse_fields(ticket.ticket)
@@ -366,6 +390,9 @@ def self_test(server, token=None):
     exported_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(EXPORTED_TYPE, exported_request)), options=options)
     exported = client.do_get(exported_info.endpoints[0].ticket, options=options).read_all().to_pylist()
     assert exported == fk
+    type_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(XDBC_TYPE, b"\x08" + varint((1 << 64) - 5))), options=options)
+    type_rows = client.do_get(type_info.endpoints[0].ticket, options=options).read_all().to_pylist()
+    assert len(type_rows) == 1 and type_rows[0]["data_type"] == -5 and type_rows[0]["create_params"] is None
     cross_request = field(1, b"main") + field(2, b"public") + field(3, b"customers") + field(4, b"main") + field(5, b"public") + field(6, b"orders")
     cross_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(CROSS_TYPE, cross_request)), options=options)
     assert client.do_get(cross_info.endpoints[0].ticket, options=options).read_all().to_pylist() == fk
@@ -397,8 +424,9 @@ def main():
     parser.add_argument("--bad-metadata-schema", action="store_true", help="return invalid schema/table metadata column")
     parser.add_argument("--metadata-schema-mismatch", action="store_true", help="return a different schema on the second metadata endpoint")
     parser.add_argument("--metadata-no-endpoints", action="store_true", help="return metadata schema without endpoints")
+    parser.add_argument("--bad-xdbc-child", action="store_true", help="use an invalid nullable XDBC list child")
     args = parser.parse_args()
-    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay, args.host, args.bad_catalog_schema, args.schema_mismatch, args.empty_catalog, args.catalog_no_endpoints, args.bad_metadata_schema, args.metadata_schema_mismatch, args.metadata_no_endpoints)
+    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay, args.host, args.bad_catalog_schema, args.schema_mismatch, args.empty_catalog, args.catalog_no_endpoints, args.bad_metadata_schema, args.metadata_schema_mismatch, args.metadata_no_endpoints, args.bad_xdbc_child)
     if args.self_test:
         try:
             self_test(server, args.token)
