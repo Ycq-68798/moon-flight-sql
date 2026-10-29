@@ -61,5 +61,8 @@ jobs:
           start_server --unknown-count
           moon run cmd/unknown --target native
           stop_server
+          start_server --large --unknown-count
+          moon run cmd/unknown --target native
+          stop_server
           start_server --large
           moon run cmd/large --target native

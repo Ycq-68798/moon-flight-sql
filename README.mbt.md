@@ -34,7 +34,7 @@ fn main {
 
 Optional `metadata` is sent with both `GetFlightInfo` and each `DoGet` request. For example, pass `metadata=[{ name: "authorization", value: "Bearer TOKEN" }]`. Names use lowercase ASCII; values use printable ASCII. Binary and reserved gRPC metadata are rejected. The current connection is plaintext h2c: credentials and query data are visible on the network, so use this only within a protected local connection or tunnel.
 
-The client checks the total number of rows against `FlightInfo.total_records`. If the server reports an unknown count (`-1`), it rejects the query by default. Passing `allow_unknown_count=true` opts out of this check; results could then be silently incomplete because of the MoonRPC limit described below. This check relies on an accurate server count: matching counts do not validate individual values, detect all corruption, or exclude offsetting errors across endpoints.
+The client checks the total number of rows against `FlightInfo.total_records`. It rejects queries when the server reports an unknown count (`-1`), because the transport can silently discard an oversized batch. This check relies on an accurate server count: matching counts do not validate individual values, detect all corruption, or exclude offsetting errors across endpoints. Many Flight SQL servers report unknown counts, so they cannot currently be queried by this client.
 
 ## Verify
 
@@ -53,14 +53,14 @@ moon run cmd/main --target native
 
 The integration example checks two record batches, four exact rows including a null, and an invalid-SQL gRPC error. `python tests/server.py --port 0 --self-test` separately checks the fixture using PyArrow's own client.
 
-For authentication, run `python tests/server.py --port 8815 --token demo-token` in one terminal and `moon run cmd/auth --target native` in another. This verifies missing and wrong tokens are rejected and the correct token works for both RPCs. For unknown counts, use `python tests/server.py --port 8815 --unknown-count` and `moon run cmd/unknown --target native`. To reproduce the oversized-message check, use `python tests/server.py --port 8815 --large` and `moon run cmd/large --target native`.
+For authentication, run `python tests/server.py --port 8815 --token demo-token` in one terminal and `moon run cmd/auth --target native` in another. This verifies missing and wrong tokens are rejected and the correct token works for both RPCs. For an oversized batch with unknown row count, use `python tests/server.py --port 8815 --large --unknown-count` and `moon run cmd/unknown --target native`; the query is rejected before retrieval. To reproduce the oversized-message check with a known count, use `python tests/server.py --port 8815 --large` and `moon run cmd/large --target native`.
 
 ## Current scope
 
 - Unencrypted h2c, IPv4 numeric address and sequential use of one connection. TLS, authentication handshake and DNS are not implemented. Bearer credentials can be passed as metadata over a protected connection.
 - Endpoints on the current connection are supported, including the reuse-connection location. An endpoint requiring another location is rejected; all returned endpoints are consumed in order.
 - MoonRPC currently buffers the complete `DoGet` response before decoding; this is not a streaming or bounded-memory implementation. Arrow types and compression are limited by MoonArrow's reader.
-- MoonRPC 0.21.0 limits an individual gRPC message to 4 MiB. In the tested version, a larger FlightData message can be dropped while the server's success status is still returned. Known row counts are checked to catch this failure; if the count is unknown and the check is explicitly bypassed, silent data loss remains possible. The upstream transport can also buffer oversized data before rejecting it.
+- MoonRPC 0.21.0 limits an individual gRPC message to 4 MiB. In the tested version, a larger FlightData message can be dropped while the server's success status is still returned. Row counts are checked to catch this failure when the server reports an accurate count. The upstream transport may still buffer the oversized message, and a server that reports an incorrect count can defeat this check. Proper handling requires a transport fix that retains the error and aborts the oversized stream.
 - Statement query only: prepared statements, parameter binding, transactions, cancellation and SQL metadata APIs are not implemented. The project is an interoperability prototype rather than a complete Flight SQL driver.
 
 Protocol references: [Flight.proto](https://github.com/apache/arrow/blob/main/format/Flight.proto) and [FlightSql.proto](https://github.com/apache/arrow/blob/main/format/FlightSql.proto).

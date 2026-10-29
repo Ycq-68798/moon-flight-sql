@@ -18,9 +18,5 @@ async fn run() -> Unit {
     _ => false
   }
   guard rejected else { fail("unknown row count was not rejected") }
-  let results = client.query(sql, allow_unknown_count=true)
-  guard results.length() == 1 && results[0].batches.length() == 2 else {
-    fail("expected two batches with explicit opt-in")
-  }
-  println("PASS: unknown row count rejected by default and accepted on opt-in")
+  println("PASS: unknown row count rejected before result retrieval")
 }

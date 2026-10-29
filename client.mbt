@@ -65,7 +65,6 @@ pub async fn Client::query(
   sql : String,
   timeout_ms~ : Int32 = 30000,
   metadata~ : Array[Metadata] = [],
-  allow_unknown_count~ : Bool = false,
 ) -> Array[@arrow.IpcData] {
   let headers = encode_metadata(metadata)
   let info = self.channel.unary(
@@ -81,7 +80,7 @@ pub async fn Client::query(
     raise FlightError::Protocol("GetFlightInfo must return one message")
   }
   let expected = total_records(info.messages[0])
-  if expected == -1L && !allow_unknown_count {
+  if expected == -1L {
     raise FlightError::Protocol(
       "server did not provide total_records; result integrity cannot be checked",
     )
