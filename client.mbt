@@ -1,12 +1,17 @@
 ///|
 /// A single, unencrypted h2c Flight SQL connection. Use sequentially.
 pub struct Client {
-  channel : @net.Channel
+  channel : SafeChannel
+  mut busy : Bool
 }
 
 ///|
-pub async fn Client::connect(host : String, port : Int32) -> Client {
-  { channel: @net.Channel::connect(host, port), }
+pub async fn Client::connect(
+  host : String,
+  port : Int32,
+  max_query_bytes~ : Int32 = 67108864,
+) -> Client {
+  { channel: SafeChannel::connect(host, port, max_query_bytes~), busy: false, }
 }
 
 ///|
@@ -66,12 +71,21 @@ pub async fn Client::query(
   timeout_ms~ : Int32 = 30000,
   metadata~ : Array[Metadata] = [],
 ) -> Array[@arrow.IpcData] {
+  if self.busy {
+    raise FlightError::Protocol("concurrent queries are not supported")
+  }
+  self.busy = true
+  defer {
+    self.busy = false
+  }
   let headers = encode_metadata(metadata)
-  let info = self.channel.unary(
+  let budget = QueryBudget::new(self.channel.max_query_bytes)
+  let info = self.channel.call(
     "/arrow.flight.protocol.FlightService/GetFlightInfo",
     statement_descriptor(sql),
     timeout_millis=timeout_ms,
     metadata=headers,
+    budget~,
   )
   if info.grpc_status != 0 {
     raise FlightError::Rpc(info.grpc_status, info.grpc_message)
@@ -80,11 +94,6 @@ pub async fn Client::query(
     raise FlightError::Protocol("GetFlightInfo must return one message")
   }
   let expected = total_records(info.messages[0])
-  if expected == -1L {
-    raise FlightError::Protocol(
-      "server did not provide total_records; result integrity cannot be checked",
-    )
-  }
   let endpoints = decode_endpoints(info.messages[0])
   let result = []
   let mut actual = 0L
@@ -94,11 +103,12 @@ pub async fn Client::query(
       !endpoint.locations.contains("") {
       raise FlightError::Protocol("endpoint requires a different location")
     }
-    let reply = self.channel.server_streaming(
+    let reply = self.channel.call(
       "/arrow.flight.protocol.FlightService/DoGet",
       endpoint.ticket,
       timeout_millis=timeout_ms,
       metadata=headers,
+      budget~,
     )
     if reply.grpc_status != 0 {
       raise FlightError::Rpc(reply.grpc_status, reply.grpc_message)

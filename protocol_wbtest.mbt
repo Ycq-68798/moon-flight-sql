@@ -96,3 +96,82 @@ test "FlightInfo count handles known, absent and unknown values" {
   }
   assert_true(rejected)
 }
+
+///|
+test "gRPC message guard handles split prefixes, bodies, and empty messages" {
+  let validator = MessageGuard::new(QueryBudget::new(67108864))
+  validator.push(b"\x00\x00")
+  validator.push(b"\x00\x00\x03ab")
+  validator.push(b"c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01z")
+  validator.finish()
+}
+
+///|
+test "gRPC message guard rejects oversized and truncated frames" {
+  let oversized = MessageGuard::new(QueryBudget::new(67108864))
+  oversized.push(b"\x00\x00\x40")
+  let rejected = try {
+    oversized.push(b"\x00\x01")
+    false
+  } catch {
+    FlightError::Rpc(8, _) => true
+    _ => false
+  }
+  assert_true(rejected)
+  let partial = MessageGuard::new(QueryBudget::new(67108864))
+  partial.push(b"\x00\x00\x00\x00\x02x")
+  let truncated = try {
+    partial.finish()
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(truncated)
+  let partial_header = MessageGuard::new(QueryBudget::new(67108864))
+  partial_header.push(b"\x00\x00")
+  let header_truncated = try {
+    partial_header.finish()
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(header_truncated)
+}
+
+///|
+test "gRPC message guard rejects compression and accepts 4 MiB prefix" {
+  let compressed = MessageGuard::new(QueryBudget::new(67108864))
+  let rejected = try {
+    compressed.push(b"\x01\x00\x00\x00\x00")
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(rejected)
+  let boundary = MessageGuard::new(QueryBudget::new(67108864))
+  boundary.push(b"\x00\x00\x40\x00\x00")
+  assert_eq(boundary.remaining, 4194304)
+}
+
+///|
+test "gRPC response limit counts all message prefixes and bodies" {
+  let budget = QueryBudget::new(12)
+  let validator = MessageGuard::new(budget)
+  validator.push(b"\x00\x00\x00\x00\x01a")
+  validator.finish()
+  let next_rpc = MessageGuard::new(budget)
+  next_rpc.push(b"\x00\x00\x00\x00\x01b")
+  next_rpc.finish()
+  let rejected = try {
+    next_rpc.push(b"\x00")
+    false
+  } catch {
+    FlightError::Rpc(8, "query responses exceed the configured byte limit") =>
+      true
+    _ => false
+  }
+  assert_true(rejected)
+}

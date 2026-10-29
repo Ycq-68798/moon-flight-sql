@@ -6,6 +6,7 @@ Use --self-test to exercise the service with PyArrow's Flight client.
 
 import argparse
 import sqlite3
+import time
 import uuid
 
 import pyarrow as pa
@@ -82,26 +83,36 @@ class TokenMiddleware(flight.ServerMiddlewareFactory):
 
 
 class TestFlightSqlServer(flight.FlightServerBase):
-    def __init__(self, port, token=None, large=False, unknown_count=False):
+    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0):
         middleware = {"auth": TokenMiddleware(token)} if token is not None else None
         super().__init__(f"grpc://127.0.0.1:{port}", middleware=middleware)
         self.tickets = set()
         self.large = large
+        self.medium = medium
+        self.many = many
+        self.multi = multi
         self.unknown_count = unknown_count
+        self.delay = delay
 
     def get_flight_info(self, context, descriptor):
+        if self.delay:
+            time.sleep(self.delay)
         try:
             query = unpack_any(descriptor.command, QUERY_TYPE)[1].decode("utf-8")
         except (KeyError, ValueError, UnicodeDecodeError) as exc:
             raise flight.FlightServerError(f"invalid SQL command: {exc}") from exc
         if query.strip().rstrip(";").upper() != QUERY.upper():
             raise flight.FlightServerError("unsupported SQL query")
-        handle = uuid.uuid4().bytes
-        self.tickets.add(handle)
-        ticket = pack_any(TICKET_TYPE, field(1, handle))
-        endpoint = flight.FlightEndpoint(ticket, [])
-        total = -1 if self.unknown_count else (1 if self.large else 4)
-        return flight.FlightInfo(SCHEMA, descriptor, [endpoint], total, -1)
+        endpoints = []
+        for _ in range(2 if self.multi and query.strip().endswith(";") else 1):
+            handle = uuid.uuid4().bytes
+            self.tickets.add(handle)
+            ticket = pack_any(TICKET_TYPE, field(1, handle))
+            endpoints.append(flight.FlightEndpoint(ticket, []))
+        total = -1 if self.unknown_count else (100 if self.many else (1 if self.large or self.medium else 4))
+        if total >= 0:
+            total *= len(endpoints)
+        return flight.FlightInfo(SCHEMA, descriptor, endpoints, total, -1)
 
     def do_get(self, context, ticket):
         try:
@@ -111,9 +122,12 @@ class TestFlightSqlServer(flight.FlightServerBase):
         if handle not in self.tickets:
             raise flight.FlightServerError("unknown or already used ticket")
         self.tickets.remove(handle)
-        if self.large:
+        if self.many:
+            batches = [pa.RecordBatch.from_pylist([{"id": i, "name": "x"}], schema=SCHEMA) for i in range(100)]
+            return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(SCHEMA, batches))
+        if self.large or self.medium:
             batch = pa.RecordBatch.from_pylist(
-                [{"id": 1, "name": "x" * (5 * 1024 * 1024)}], schema=SCHEMA
+                [{"id": 1, "name": "x" * ((5 if self.large else 3) * 1024 * 1024)}], schema=SCHEMA
             )
             return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(SCHEMA, [batch]))
         db = sqlite3.connect(":memory:")
@@ -171,9 +185,13 @@ def main():
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--token", help="require this bearer token on query and retrieval")
     parser.add_argument("--large", action="store_true", help="send a single batch exceeding 4 MiB")
+    parser.add_argument("--medium", action="store_true", help="send a single 3 MiB batch")
+    parser.add_argument("--many", action="store_true", help="send 100 small batches")
+    parser.add_argument("--multi", action="store_true", help="send two endpoints for a query ending in semicolon")
     parser.add_argument("--unknown-count", action="store_true", help="report unknown total row count")
+    parser.add_argument("--delay", type=float, default=0, help="delay GetFlightInfo by this many seconds")
     args = parser.parse_args()
-    server = TestFlightSqlServer(args.port, args.token, args.large, args.unknown_count)
+    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay)
     if args.self_test:
         try:
             self_test(server, args.token)

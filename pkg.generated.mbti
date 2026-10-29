@@ -3,7 +3,6 @@ package "Ycq-68798/moon-flight-sql"
 
 import {
   "moonbitlang/core/debug",
-  "moonbitstack/moonrpc/net",
   "shunge/arrow",
 }
 
@@ -23,10 +22,11 @@ pub fn FlightError::to_repr(Self) -> @debug.Repr
 
 // Types and methods
 pub struct Client {
-  channel : @net.Channel
+  channel : SafeChannel
+  mut busy : Bool
 }
 pub fn Client::close(Self) -> Unit
-pub async fn Client::connect(String, Int32) -> Self
+pub async fn Client::connect(String, Int32, max_query_bytes? : Int32) -> Self
 pub async fn Client::query(Self, String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[@arrow.IpcData]
 
 pub(all) struct Endpoint {
@@ -39,6 +39,8 @@ pub(all) struct Metadata {
   name : String
   value : String
 }
+
+type SafeChannel
 
 // Type aliases
 

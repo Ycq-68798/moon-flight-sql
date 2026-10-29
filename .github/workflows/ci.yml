@@ -55,14 +55,26 @@ jobs:
           start_server
           moon run cmd/main --target native
           stop_server
+          start_server --many
+          moon run cmd/limit --target native
+          stop_server
+          start_server --multi
+          moon run cmd/multi --target native
+          stop_server
           start_server --token demo-token
           moon run cmd/auth --target native
           stop_server
           start_server --unknown-count
           moon run cmd/unknown --target native
           stop_server
+          start_server --medium --unknown-count
+          moon run cmd/medium --target native
+          stop_server
           start_server --large --unknown-count
-          moon run cmd/unknown --target native
+          moon run cmd/large --target native
           stop_server
           start_server --large
           moon run cmd/large --target native
+          stop_server
+          start_server --delay 1
+          moon run cmd/timeout --target native

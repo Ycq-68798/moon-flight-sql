@@ -32,9 +32,11 @@ fn main {
 
 `query` propagates transport and Arrow errors; nonzero gRPC status is raised as `FlightError::Rpc`. The optional `timeout_ms` applies to each RPC separately and defaults to 30 seconds. SQL is sent to the server as given; the server decides what it is allowed to execute.
 
+`Client::connect` accepts `max_query_bytes`, a positive limit on the total gRPC DATA bytes received across `GetFlightInfo` and all `DoGet` calls in one query. The default is 64 MiB. On exceeding it the client raises `FlightError::Rpc(8, ...)` and closes the connection; open a new client for subsequent queries. The limit includes gRPC message prefixes and resets for each query.
+
 Optional `metadata` is sent with both `GetFlightInfo` and each `DoGet` request. For example, pass `metadata=[{ name: "authorization", value: "Bearer TOKEN" }]`. Names use lowercase ASCII; values use printable ASCII. Binary and reserved gRPC metadata are rejected. The current connection is plaintext h2c: credentials and query data are visible on the network, so use this only within a protected local connection or tunnel.
 
-The client checks the total number of rows against `FlightInfo.total_records`. It rejects queries when the server reports an unknown count (`-1`), because the transport can silently discard an oversized batch. This check relies on an accurate server count: matching counts do not validate individual values, detect all corruption, or exclude offsetting errors across endpoints. Many Flight SQL servers report unknown counts, so they cannot currently be queried by this client.
+The client accepts `FlightInfo.total_records = -1` (unknown). When the server provides a count, the client compares it with the decoded total across endpoints. This check relies on an accurate server count: matching counts do not validate individual values, detect all corruption, or exclude offsetting errors across endpoints.
 
 ## Verify
 
@@ -53,14 +55,14 @@ moon run cmd/main --target native
 
 The integration example checks two record batches, four exact rows including a null, and an invalid-SQL gRPC error. `python tests/server.py --port 0 --self-test` separately checks the fixture using PyArrow's own client.
 
-For authentication, run `python tests/server.py --port 8815 --token demo-token` in one terminal and `moon run cmd/auth --target native` in another. This verifies missing and wrong tokens are rejected and the correct token works for both RPCs. For an oversized batch with unknown row count, use `python tests/server.py --port 8815 --large --unknown-count` and `moon run cmd/unknown --target native`; the query is rejected before retrieval. To reproduce the oversized-message check with a known count, use `python tests/server.py --port 8815 --large` and `moon run cmd/large --target native`.
+For authentication, run `python tests/server.py --port 8815 --token demo-token` in one terminal and `moon run cmd/auth --target native` in another. This verifies missing and wrong tokens are rejected and the correct token works for both RPCs. For unknown counts, run the server with `--unknown-count` and use `moon run cmd/unknown --target native`. For an oversized batch, run the server with `--large --unknown-count` and use `moon run cmd/large --target native`; the client rejects the response with gRPC status 8 and closes the connection. The same test also works with a known count by omitting `--unknown-count`. Run the server with `--medium --unknown-count` and use `moon run cmd/medium --target native` to check a 3 MiB batch. The `--many`/`cmd/limit` and `--multi`/`cmd/multi` pairs check limits across small batches and endpoints. The `--delay 1`/`cmd/timeout` pair checks timeouts and concurrent-query rejection.
 
 ## Current scope
 
-- Unencrypted h2c, IPv4 numeric address and sequential use of one connection. TLS, authentication handshake and DNS are not implemented. Bearer credentials can be passed as metadata over a protected connection.
+- Unencrypted h2c, IPv4 numeric address and sequential use of one connection. Concurrent queries on one client are rejected. TLS, authentication handshake and DNS are not implemented. Bearer credentials can be passed as metadata over a protected connection.
 - Endpoints on the current connection are supported, including the reuse-connection location. An endpoint requiring another location is rejected; all returned endpoints are consumed in order.
-- MoonRPC currently buffers the complete `DoGet` response before decoding; this is not a streaming or bounded-memory implementation. Arrow types and compression are limited by MoonArrow's reader.
-- MoonRPC 0.21.0 limits an individual gRPC message to 4 MiB. In the tested version, a larger FlightData message can be dropped while the server's success status is still returned. Row counts are checked to catch this failure when the server reports an accurate count. The upstream transport may still buffer the oversized message, and a server that reports an incorrect count can defeat this check. Proper handling requires a transport fix that retains the error and aborts the oversized stream.
+- Responses are buffered in memory before decoding, not streamed. `max_query_bytes` bounds received gRPC DATA bytes across a query, not HTTP/2 headers or process peak memory; framing copies and decoded Arrow values can require more memory. Arrow types and IPC compression are limited by MoonArrow's reader.
+- MoonRPC 0.21.0 caps a single gRPC message at 4 MiB and may silently discard an oversized message. This client uses its own sequential socket driver around MoonRPC's HTTP/2 engine and checks the gRPC length prefix before passing each DATA frame to that engine. A message exceeding 4 MiB raises `FlightError::Rpc(8, ...)` and closes the connection; reconnect to continue. It does not receive batches larger than 4 MiB. Truncated gRPC messages and compressed gRPC messages are rejected; the latter avoids unchecked expansion in the dependency.
 - Statement query only: prepared statements, parameter binding, transactions, cancellation and SQL metadata APIs are not implemented. The project is an interoperability prototype rather than a complete Flight SQL driver.
 
 Protocol references: [Flight.proto](https://github.com/apache/arrow/blob/main/format/Flight.proto) and [FlightSql.proto](https://github.com/apache/arrow/blob/main/format/FlightSql.proto).
