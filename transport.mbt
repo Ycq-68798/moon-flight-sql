@@ -83,6 +83,7 @@ fn MessageGuard::finish(self : MessageGuard) -> Unit raise FlightError {
 struct SafeChannel {
   conn : @socket.Tcp
   engine : @rpcclient.H2Client
+  authority : String
   mut closed : Bool
   max_query_bytes : Int32
 }
@@ -96,16 +97,88 @@ async fn SafeChannel::connect(
   if max_query_bytes <= 0 {
     raise FlightError::Protocol("max_query_bytes must be positive")
   }
-  let conn = @socket.Tcp::connect(
-    @socket.Addr::parse(host + ":" + port.to_string()),
-  )
+  if host.is_empty() || port <= 0 || port > 65535 {
+    raise FlightError::Protocol("host and port must identify a valid endpoint")
+  }
+  for c in host {
+    if !(c is ('a'..<='z') ||
+      c is ('A'..<='Z') ||
+      c is ('0'..<='9') ||
+      c is '.' ||
+      c is '-' ||
+      c is '_' ||
+      c is ':') {
+      raise FlightError::Protocol(
+        "host must be a hostname or unbracketed IP address",
+      )
+    }
+  }
+  let authority = make_authority(host, port)
+  let conn = @socket.Tcp::connect_to_host(host, port~)
   errdefer conn.close()
   let engine = @rpcclient.H2Client::new()
   conn.write(@http2.preface)
   for frame in engine.preface() {
     conn.write(frame.encode())
   }
-  { conn, engine, closed: false, max_query_bytes, }
+  { conn, engine, authority, closed: false, max_query_bytes, }
+}
+
+///|
+/// Permit a single response stream while accepting HTTP/2 connection control
+/// frames. Header continuations cannot be interleaved with any other frame.
+priv struct FrameGuard {
+  id : Int32
+  mut in_headers : Bool
+}
+
+///|
+fn FrameGuard::new(id : Int32) -> FrameGuard {
+  { id, in_headers: false, }
+}
+
+///|
+fn FrameGuard::check(
+  self : FrameGuard,
+  frame : @http2.Frame,
+) -> Unit raise FlightError {
+  if self.in_headers {
+    match frame {
+      @http2.Frame::Continuation(stream_id~, end_headers~, ..) if stream_id ==
+        self.id => {
+        self.in_headers = !end_headers
+        return
+      }
+      _ => raise FlightError::Protocol("interleaved HTTP/2 header block")
+    }
+  }
+  match frame {
+    @http2.Frame::Headers(stream_id~, end_headers~, ..) => {
+      if stream_id != self.id {
+        raise FlightError::Protocol("unexpected HTTP/2 response stream")
+      }
+      self.in_headers = !end_headers
+    }
+    @http2.Frame::Data(stream_id~, ..) =>
+      if stream_id != self.id {
+        raise FlightError::Protocol("unexpected HTTP/2 response stream")
+      }
+    @http2.Frame::Continuation(..) =>
+      raise FlightError::Protocol("unexpected HTTP/2 continuation")
+    @http2.Frame::PushPromise(..) =>
+      raise FlightError::Protocol("HTTP/2 server push is disabled")
+    _ => ()
+  }
+}
+
+///|
+/// HTTP/2 authority includes the port and brackets an IPv6 literal.
+fn make_authority(host : String, port : Int32) -> String {
+  if host.contains(":") {
+    "[" + host + "]:" + port.to_string()
+  } else {
+    host + ":" + port.to_string()
+  }
 }
 
 ///|
@@ -123,6 +196,7 @@ async fn SafeChannel::pump(
   budget : QueryBudget,
 ) -> @rpcclient.CallReply {
   let validator = MessageGuard::new(budget)
+  let frame_guard = FrameGuard::new(id)
   while !self.engine.is_done(id) {
     let head = self.conn.read_exactly(9)
     let hdr = @http2.FrameHeader::decode(head)
@@ -135,6 +209,7 @@ async fn SafeChannel::pump(
     buf.write_bytes(head)
     buf.write_bytes(payload)
     let (frame, _) = @http2.decode(buf.to_bytes())
+    frame_guard.check(frame)
     if frame is @http2.Frame::Data(stream_id~, data~, ..) && stream_id == id {
       validator.push(data)
     }
@@ -169,6 +244,7 @@ async fn SafeChannel::call(
     request,
     metadata~,
     timeout_millis~,
+    authority=self.authority,
   )
   if id == 0 {
     raise FlightError::Rpc(14, "connection is draining")

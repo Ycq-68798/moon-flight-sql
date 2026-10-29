@@ -175,3 +175,125 @@ test "gRPC response limit counts all message prefixes and bodies" {
   }
   assert_true(rejected)
 }
+
+///|
+test "HTTP authority formats DNS, IPv4 and IPv6 endpoints" {
+  assert_eq(make_authority("localhost", 8815), "localhost:8815")
+  assert_eq(make_authority("127.0.0.1", 1234), "127.0.0.1:1234")
+  assert_eq(make_authority("::1", 8816), "[::1]:8816")
+  let engine = @rpcclient.H2Client::new()
+  let (_, frames) = engine.unary(
+    "/test",
+    b"",
+    authority=make_authority("::1", 8816),
+  )
+  guard frames[0] is @http2.Frame::Headers(fragment~, ..) else {
+    fail("expected request headers")
+  }
+  let headers = @hpack.Decoder::new().decode(fragment[:])
+  let mut found = false
+  for header in headers {
+    if header.name == b":authority" && header.value == b"[::1]:8816" {
+      found = true
+    }
+  }
+  assert_true(found)
+}
+
+///|
+test "HTTP2 response guard accepts control frames and rejects unexpected streams" {
+  let f = FrameGuard::new(1)
+  f.check(@http2.Frame::Settings(params=[], ack=true))
+  f.check(@http2.Frame::Ping(payload=b"12345678", ack=false))
+  f.check(@http2.Frame::WindowUpdate(stream_id=0, increment=1))
+  f.check(@http2.Frame::WindowUpdate(stream_id=3, increment=1))
+  f.check(@http2.Frame::RstStream(stream_id=3, error_code=0))
+  f.check(@http2.Frame::GoAway(last_stream_id=1, error_code=0, debug=b""))
+  f.check(
+    @http2.Frame::Headers(
+      stream_id=1,
+      fragment=b"",
+      end_stream=false,
+      end_headers=false,
+      priority=None,
+      padding=0,
+    ),
+  )
+  f.check(
+    @http2.Frame::Continuation(stream_id=1, fragment=b"", end_headers=true),
+  )
+  f.check(
+    @http2.Frame::Data(stream_id=1, data=b"", end_stream=false, padding=0),
+  )
+  let wrong = try {
+    f.check(
+      @http2.Frame::Headers(
+        stream_id=3,
+        fragment=b"",
+        end_stream=false,
+        end_headers=false,
+        priority=None,
+        padding=0,
+      ),
+    )
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(wrong)
+  let unsolicited = try {
+    f.check(
+      @http2.Frame::Continuation(stream_id=3, fragment=b"", end_headers=false),
+    )
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(unsolicited)
+  let wrong_data = try {
+    f.check(
+      @http2.Frame::Data(stream_id=3, data=b"", end_stream=false, padding=0),
+    )
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(wrong_data)
+  let server_push = try {
+    f.check(
+      @http2.Frame::PushPromise(
+        stream_id=1,
+        promised_id=2,
+        fragment=b"",
+        end_headers=true,
+        padding=0,
+      ),
+    )
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(server_push)
+  f.check(
+    @http2.Frame::Headers(
+      stream_id=1,
+      fragment=b"",
+      end_stream=false,
+      end_headers=false,
+      priority=None,
+      padding=0,
+    ),
+  )
+  let interleaved = try {
+    f.check(@http2.Frame::Ping(payload=b"12345678", ack=false))
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(interleaved)
+}

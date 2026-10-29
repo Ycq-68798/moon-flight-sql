@@ -51,9 +51,37 @@ jobs:
             kill "$server_pid" 2>/dev/null || true
             wait "$server_pid" 2>/dev/null || true
           }
-          trap stop_server EXIT
+          stop_ipv6() {
+            if [ -n "${ipv6_pid:-}" ]; then
+              kill "$ipv6_pid" 2>/dev/null || true
+              wait "$ipv6_pid" 2>/dev/null || true
+              ipv6_pid=""
+            fi
+          }
+          trap 'stop_ipv6; stop_server' EXIT
           start_server
           moon run cmd/main --target native
+          moon run cmd/address --target native
+          if python -c 'import socket; s=socket.socket(socket.AF_INET6); s.bind(("::1", 0)); s.close()' 2>/dev/null; then
+            python tests/server.py --host ::1 --port 8816 > server-ipv6.log 2>&1 &
+            ipv6_pid=$!
+            python - <<'PY'
+          import socket
+          import time
+          for _ in range(100):
+              try:
+                  with socket.create_connection(('::1', 8816), timeout=0.2):
+                      break
+              except OSError:
+                  time.sleep(0.1)
+          else:
+              raise SystemExit('IPv6 Flight test server did not start')
+          PY
+            moon run cmd/ipv6 --target native
+            stop_ipv6
+          else
+            echo 'IPv6 loopback unavailable; skipping IPv6 integration test'
+          fi
           stop_server
           start_server --many
           moon run cmd/limit --target native

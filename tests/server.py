@@ -83,9 +83,11 @@ class TokenMiddleware(flight.ServerMiddlewareFactory):
 
 
 class TestFlightSqlServer(flight.FlightServerBase):
-    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0):
+    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0, host="127.0.0.1"):
         middleware = {"auth": TokenMiddleware(token)} if token is not None else None
-        super().__init__(f"grpc://127.0.0.1:{port}", middleware=middleware)
+        bind_host = f"[{host}]" if ":" in host else host
+        super().__init__(f"grpc://{bind_host}:{port}", middleware=middleware)
+        self.host = bind_host
         self.tickets = set()
         self.large = large
         self.medium = medium
@@ -142,7 +144,7 @@ class TestFlightSqlServer(flight.FlightServerBase):
 
 
 def self_test(server, token=None):
-    client = flight.FlightClient(f"grpc://127.0.0.1:{server.port}")
+    client = flight.FlightClient(f"grpc://{server.host}:{server.port}")
     command = pack_any(QUERY_TYPE, field(1, QUERY.encode()))
     descriptor = flight.FlightDescriptor.for_command(command)
     options = None
@@ -182,6 +184,7 @@ def self_test(server, token=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8815)
+    parser.add_argument("--host", default="127.0.0.1", help="bind address, e.g. ::1 for IPv6")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--token", help="require this bearer token on query and retrieval")
     parser.add_argument("--large", action="store_true", help="send a single batch exceeding 4 MiB")
@@ -191,14 +194,14 @@ def main():
     parser.add_argument("--unknown-count", action="store_true", help="report unknown total row count")
     parser.add_argument("--delay", type=float, default=0, help="delay GetFlightInfo by this many seconds")
     args = parser.parse_args()
-    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay)
+    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay, args.host)
     if args.self_test:
         try:
             self_test(server, args.token)
         finally:
             server.shutdown()
     else:
-        print(f"Flight SQL test server listening on 127.0.0.1:{server.port}", flush=True)
+        print(f"Flight SQL test server listening on {server.host}:{server.port}", flush=True)
         server.serve()
 
 

@@ -11,3 +11,7 @@ import {
   "shunge/arrow",
   "moonbitlang/core/debug",
 }
+
+import {
+  "moonbitstack/moonhttp/hpack",
+} for "wbtest"
