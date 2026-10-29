@@ -1,0 +1,40 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "Ycq-68798/moon-flight-sql"
+
+import {
+  "moonbitlang/core/debug",
+  "moonbitstack/moonrpc/net",
+  "shunge/arrow",
+}
+
+// Values
+pub fn decode_endpoints(Bytes) -> Array[Endpoint] raise
+
+pub fn flight_data_to_ipc(Array[Bytes]) -> Bytes raise
+
+pub fn statement_descriptor(String) -> Bytes
+
+// Errors
+pub(all) suberror FlightError {
+  Protocol(String)
+  Rpc(Int32, String)
+} derive(@debug.Debug)
+pub fn FlightError::to_repr(Self) -> @debug.Repr
+
+// Types and methods
+pub struct Client {
+  channel : @net.Channel
+}
+pub fn Client::close(Self) -> Unit
+pub async fn Client::connect(String, Int32) -> Self
+pub async fn Client::query(Self, String, timeout_ms? : Int32) -> Array[@arrow.IpcData]
+
+pub(all) struct Endpoint {
+  ticket : Bytes
+  locations : Array[String]
+} derive(@debug.Debug)
+pub fn Endpoint::to_repr(Self) -> @debug.Repr
+
+// Type aliases
+
+// Traits
