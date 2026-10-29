@@ -133,7 +133,10 @@ def metadata_result(kind, request, bad_schema=False):
                 continue
             row = {"catalog_name": cat, "db_schema_name": group, "table_name": name, "table_type": kind_name}
             if include:
-                row["table_schema"] = pa.schema([pa.field("id", pa.int64())]).serialize().to_pybytes()
+                row["table_schema"] = pa.schema([
+                    pa.field("ID", pa.int64(), nullable=False, metadata={b"ARROW:FLIGHT:SQL:TYPE_NAME": b"BIGINT"}),
+                    pa.field("labels", pa.list_(pa.field("item", pa.string(), nullable=True)), nullable=True),
+                ], metadata={b"source": b"fixture"}).serialize().to_pybytes()
             rows.append(row)
     if bad_schema:
         original = schema.field(0)
@@ -345,7 +348,10 @@ def self_test(server, token=None):
     table_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(TABLES_TYPE, table_request)), options=options)
     table_rows = client.do_get(table_info.endpoints[0].ticket, options=options).read_all().to_pylist()
     assert len(table_rows) == 1 and table_rows[0]["table_name"] == "order_view"
-    assert pa.ipc.read_schema(pa.BufferReader(table_rows[0]["table_schema"])).field(0).name == "id"
+    table_schema = pa.ipc.read_schema(pa.BufferReader(table_rows[0]["table_schema"]))
+    assert table_schema.field(0).name == "ID" and not table_schema.field(0).nullable
+    assert table_schema.field(0).metadata[b"ARROW:FLIGHT:SQL:TYPE_NAME"] == b"BIGINT"
+    assert table_schema.field(1).type.value_field.nullable and table_schema.metadata[b"source"] == b"fixture"
     types_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(TYPES_TYPE, b"")), options=options)
     assert client.do_get(types_info.endpoints[0].ticket, options=options).read_all().to_pylist() == [{"table_type": "TABLE"}, {"table_type": "VIEW"}]
     key_request = field(1, b"main") + field(2, b"public") + field(3, b"orders")

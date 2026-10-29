@@ -496,3 +496,52 @@ test "metadata discovery requires schema even with zero endpoints" {
   }
   assert_true(rejected)
 }
+
+///|
+test "table schema decoder consumes exactly one IPC schema message" {
+  let schema = @arrow.Schema::new([
+    @arrow.Field::new("id", @arrow.DataType::Int64, nullable=false),
+  ])
+  let stream = @arrow.write_stream(schema, [])
+  let bytes : Array[Byte] = []
+  for i in 0..<(stream.length() - 8) {
+    bytes.push(stream[i])
+  }
+  let message = Bytes::from_array(bytes)
+  assert_eq(decode_table_schema(message).fields[0].name, "id")
+  let legacy : Array[Byte] = []
+  for i in 4..<message.length() {
+    legacy.push(message[i])
+  }
+  assert_eq(decode_table_schema(Bytes::from_array(legacy)).fields[0].name, "id")
+  let bad_inputs : Array[Bytes] = [
+    b"",
+    b"\xff\xff\xff\xff",
+    b"\x00\x00\x00\x00",
+    b"\x04\x00\x00\x00bad!",
+    message + b"x",
+    stream,
+  ]
+  for input in bad_inputs {
+    let rejected = try {
+      let _ = decode_table_schema(input)
+      false
+    } catch {
+      _ => true
+    }
+    assert_true(rejected)
+  }
+  for size in 0..<message.length() {
+    let truncated : Array[Byte] = []
+    for i in 0..<size {
+      truncated.push(message[i])
+    }
+    let rejected = try {
+      let _ = decode_table_schema(Bytes::from_array(truncated))
+      false
+    } catch {
+      _ => true
+    }
+    assert_true(rejected)
+  }
+}

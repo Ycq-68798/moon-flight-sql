@@ -9,6 +9,8 @@ import {
 // Values
 pub fn decode_endpoints(Bytes) -> Array[Endpoint] raise
 
+pub fn decode_table_schema(Bytes) -> @arrow.Schema raise
+
 pub fn flight_data_to_ipc(Array[Bytes]) -> Bytes raise
 
 pub fn statement_descriptor(String) -> Bytes
@@ -96,6 +98,7 @@ pub(all) struct TableInfo {
   table_type : String
   table_schema : Bytes?
 } derive(Eq, @debug.Debug)
+pub fn TableInfo::decode_schema(Self) -> @arrow.Schema? raise
 pub fn TableInfo::equal(Self, Self) -> Bool
 pub fn TableInfo::not_equal(Self, Self) -> Bool
 pub fn TableInfo::to_repr(Self) -> @debug.Repr

@@ -13,7 +13,7 @@ pub extend DatabaseSchema with @debug.Debug::{to_repr}
 
 ///|
 /// A table or view. `table_schema` is the serialized Arrow IPC schema when
-/// `include_schema=true`; its bytes are not decoded by this API.
+/// `include_schema=true`; call `decode_schema` for an explicit validation.
 pub(all) struct TableInfo {
   catalog_name : String?
   schema_name : String?
@@ -21,6 +21,43 @@ pub(all) struct TableInfo {
   table_type : String
   table_schema : Bytes?
 } derive(Eq, Debug)
+
+///|
+/// Decode one encapsulated Arrow IPC schema message, rejecting trailing bytes.
+/// Legacy four-byte and modern continuation-prefixed framing are accepted.
+pub fn decode_table_schema(data : Bytes) -> @arrow.Schema raise {
+  if data.length() < 4 {
+    raise FlightError::Protocol("truncated table schema IPC prefix")
+  }
+  let continuation = data[0] == b'\xff' &&
+    data[1] == b'\xff' &&
+    data[2] == b'\xff' &&
+    data[3] == b'\xff'
+  let prefix = if continuation { 8 } else { 4 }
+  if data.length() < prefix {
+    raise FlightError::Protocol("truncated table schema IPC prefix")
+  }
+  let pos = prefix - 4
+  let size = data[pos].to_int64() |
+    (data[pos + 1].to_int64() << 8) |
+    (data[pos + 2].to_int64() << 16) |
+    (data[pos + 3].to_int64() << 24)
+  if size <= 0L ||
+    size > 2147483647L ||
+    size != (data.length() - prefix).to_int64() {
+    raise FlightError::Protocol("invalid table schema IPC message boundary")
+  }
+  @arrow.StreamReader::new(data).schema
+}
+
+///|
+/// Decode the included schema, or return None when it was not requested.
+pub fn TableInfo::decode_schema(self : TableInfo) -> @arrow.Schema? raise {
+  match self.table_schema {
+    None => None
+    Some(data) => Some(decode_table_schema(data))
+  }
+}
 
 ///|
 pub extend TableInfo with Eq::{equal, not_equal}

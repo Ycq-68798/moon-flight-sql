@@ -31,6 +31,9 @@ async fn run() -> Unit {
     fail("empty schema pattern presence was lost")
   }
   let tables = client.tables()
+  guard tables[0].decode_schema() is None else {
+    fail("unexpected decoded schema")
+  }
   guard tables.length() == 4 &&
     tables[0].catalog_name is None &&
     tables[0].schema_name is None else {
@@ -51,12 +54,48 @@ async fn run() -> Unit {
     views[0].table_type == "VIEW" else {
     fail("table filter failed")
   }
-  guard views[0].table_schema is Some(bytes) else {
+  guard views[0].table_schema is Some(_) else {
     fail("missing serialized table schema")
   }
-  let table_schema = @arrow.StreamReader::new(bytes).schema
-  guard table_schema.fields.length() == 1 && table_schema.fields[0].name == "id" else {
-    fail("wrong table schema")
+  let table_schema = match views[0].decode_schema() {
+    Some(schema) => schema
+    None => fail("missing schema")
+  }
+  guard table_schema.fields.length() == 2 &&
+    table_schema.fields[0].name == "ID" &&
+    !table_schema.fields[0].nullable &&
+    table_schema.fields[1].name == "labels" &&
+    table_schema.fields[1].nullable &&
+    table_schema.fields[1].children.length() == 1 &&
+    table_schema.fields[1].children[0].nullable &&
+    table_schema.fields[0].metadata.length() == 1 &&
+    table_schema.fields[0].metadata[0].key == "ARROW:FLIGHT:SQL:TYPE_NAME" &&
+    table_schema.fields[0].metadata[0].value == Some("BIGINT") &&
+    table_schema.metadata.length() == 1 &&
+    table_schema.metadata[0].value == Some("fixture") else {
+    fail("wrong nested table schema or metadata")
+  }
+  guard views[0].table_schema is Some(raw_schema) else {
+    fail("missing schema")
+  }
+  let trailing_rejected = try {
+    let _ = @flight.decode_table_schema(raw_schema + b"x")
+    false
+  } catch {
+    _ => true
+  }
+  let truncated : Array[Byte] = []
+  for i in 0..<(raw_schema.length() - 1) {
+    truncated.push(raw_schema[i])
+  }
+  let truncated_rejected = try {
+    let _ = @flight.decode_table_schema(Bytes::from_array(truncated))
+    false
+  } catch {
+    _ => true
+  }
+  guard trailing_rejected && truncated_rejected else {
+    fail("invalid schema accepted")
   }
   guard client.tables(table_types=["TABLE", "VIEW"]).length() == 4 else {
     fail("repeated table type fields failed")

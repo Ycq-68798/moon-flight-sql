@@ -28,7 +28,7 @@ jobs:
           moon update
           moon check --target native
           moon test --target native
-      - name: Exercise Flight SQL queries and key metadata against PyArrow
+      - name: Exercise Flight SQL queries, metadata and schema decoding against PyArrow
         shell: bash
         run: |
           start_server() {
