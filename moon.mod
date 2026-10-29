@@ -13,7 +13,7 @@ name = "Ycq-68798/moon-flight-sql"
 
 version = "0.1.0"
 
-readme = "README.md"
+readme = "README.mbt.md"
 
 repository = "https://github.com/Ycq-68798/moon-flight-sql"
 
