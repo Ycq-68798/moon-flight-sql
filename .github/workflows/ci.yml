@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Install test dependency
+        run: python -m pip install 'pyarrow==19.0.1'
+      - name: Check and run unit tests
+        run: |
+          moon version --all
+          moon update
+          moon check --target native
+          moon test --target native
+      - name: Exercise Flight SQL against PyArrow
+        shell: bash
+        run: |
+          start_server() {
+            python tests/server.py --port 8815 "$@" > server.log 2>&1 &
+            server_pid=$!
+            python - <<'PY'
+          import socket
+          import time
+          for _ in range(100):
+              try:
+                  with socket.create_connection(('127.0.0.1', 8815), timeout=0.2):
+                      break
+              except OSError:
+                  time.sleep(0.1)
+          else:
+              raise SystemExit('Flight test server did not start')
+          PY
+          }
+          stop_server() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap stop_server EXIT
+          start_server
+          moon run cmd/main --target native
+          stop_server
+          start_server --token demo-token
+          moon run cmd/auth --target native
+          stop_server
+          start_server --unknown-count
+          moon run cmd/unknown --target native
+          stop_server
+          start_server --large
+          moon run cmd/large --target native
