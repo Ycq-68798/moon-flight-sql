@@ -71,7 +71,7 @@ pub async fn Client::query(
   timeout_ms~ : Int32 = 30000,
   metadata~ : Array[Metadata] = [],
 ) -> Array[@arrow.IpcData] {
-  self.execute_descriptor(statement_descriptor(sql), timeout_ms~, metadata~)
+  self.execute_descriptor(statement_descriptor(sql), timeout_ms~, metadata~).parts
 }
 
 ///|
@@ -82,20 +82,35 @@ pub async fn Client::catalogs(
   timeout_ms~ : Int32 = 30000,
   metadata~ : Array[Metadata] = [],
 ) -> Array[String] {
-  let parts = self.execute_descriptor(
+  let result = self.execute_descriptor(
     catalogs_descriptor(),
     timeout_ms~,
     metadata~,
   )
+  catalog_names(result)
+}
+
+///|
+priv struct DescriptorResult {
+  schema : @arrow.Schema?
+  parts : Array[@arrow.IpcData]
+}
+
+///|
+fn catalog_names(result : DescriptorResult) -> Array[String] raise {
+  let schema = match result.schema {
+    Some(schema) => schema
+    None => raise FlightError::Protocol("missing Flight SQL catalog schema")
+  }
+  let fields = schema.fields
+  if fields.length() != 1 ||
+    fields[0].name != "catalog_name" ||
+    fields[0].data_type != @arrow.DataType::Utf8 ||
+    fields[0].nullable {
+    raise FlightError::Protocol("invalid Flight SQL catalog schema")
+  }
   let names = []
-  for part in parts {
-    let fields = part.schema.fields
-    if fields.length() != 1 ||
-      fields[0].name != "catalog_name" ||
-      fields[0].data_type != @arrow.DataType::Utf8 ||
-      fields[0].nullable {
-      raise FlightError::Protocol("invalid Flight SQL catalog schema")
-    }
+  for part in result.parts {
     for batch in part.batches {
       for i in 0..<batch.num_rows {
         match batch.get_row(i) {
@@ -114,7 +129,7 @@ async fn Client::execute_descriptor(
   descriptor : Bytes,
   timeout_ms~ : Int32,
   metadata~ : Array[Metadata],
-) -> Array[@arrow.IpcData] {
+) -> DescriptorResult {
   if self.busy {
     raise FlightError::Protocol("concurrent queries are not supported")
   }
@@ -185,5 +200,5 @@ async fn Client::execute_descriptor(
       "result row count differs from FlightInfo.total_records",
     )
   }
-  result
+  { schema: expected_schema, parts: result, }
 }

@@ -36,6 +36,8 @@ fn main {
 
 `client.catalogs()` returns catalog names using Flight SQL `CommandGetCatalogs`. It accepts the same `metadata` and `timeout_ms` options as `query`, and checks the required non-null UTF-8 `catalog_name` schema.
 
+For an empty catalog response with no endpoints, `catalogs()` validates the schema in `FlightInfo` and returns an empty list. If both the schema and endpoints are absent, it raises `FlightError::Protocol` because the catalog schema cannot be checked.
+
 The host may be a DNS name such as `localhost`, an IPv4 address, or an unbracketed IPv6 literal such as `::1`; pass the port separately. The client sends the host and port as HTTP/2 `:authority`, adding brackets around IPv6 literals. URI schemes, bracketed IPv6 inputs and IPv6 zone identifiers are rejected.
 
 Optional `metadata` is sent with both `GetFlightInfo` and each `DoGet` request. For example, pass `metadata=[{ name: "authorization", value: "Bearer TOKEN" }]`. Names use lowercase ASCII; values use printable ASCII. Binary and reserved gRPC metadata are rejected. The current connection is plaintext h2c: credentials and query data are visible on the network, so use this only within a protected local connection or tunnel.

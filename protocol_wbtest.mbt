@@ -365,3 +365,33 @@ test "response data before headers is rejected" {
   }
   assert_true(rejected)
 }
+
+///|
+test "catalogs validate FlightInfo schema even with no endpoints" {
+  let valid = @arrow.Schema::new([
+    @arrow.Field::new("catalog_name", @arrow.DataType::Utf8, nullable=false),
+  ])
+  let result : DescriptorResult = { schema: Some(valid), parts: [], }
+  assert_true(catalog_names(result).is_empty())
+  let invalid = @arrow.Schema::new([
+    @arrow.Field::new("catalog_name", @arrow.DataType::Utf8, nullable=true),
+  ])
+  let bad : DescriptorResult = { schema: Some(invalid), parts: [], }
+  let rejected = try {
+    let _ = catalog_names(bad)
+    false
+  } catch {
+    FlightError::Protocol("invalid Flight SQL catalog schema") => true
+    _ => false
+  }
+  assert_true(rejected)
+  let missing : DescriptorResult = { schema: None, parts: [], }
+  let missing_rejected = try {
+    let _ = catalog_names(missing)
+    false
+  } catch {
+    FlightError::Protocol("missing Flight SQL catalog schema") => true
+    _ => false
+  }
+  assert_true(missing_rejected)
+}

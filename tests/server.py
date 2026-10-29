@@ -84,7 +84,7 @@ class TokenMiddleware(flight.ServerMiddlewareFactory):
 
 
 class TestFlightSqlServer(flight.FlightServerBase):
-    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0, host="127.0.0.1", bad_catalog_schema=False, schema_mismatch=False, empty_catalog=False):
+    def __init__(self, port, token=None, large=False, medium=False, many=False, multi=False, unknown_count=False, delay=0, host="127.0.0.1", bad_catalog_schema=False, schema_mismatch=False, empty_catalog=False, catalog_no_endpoints=False):
         middleware = {"auth": TokenMiddleware(token)} if token is not None else None
         bind_host = f"[{host}]" if ":" in host else host
         super().__init__(f"grpc://{bind_host}:{port}", middleware=middleware)
@@ -99,6 +99,7 @@ class TestFlightSqlServer(flight.FlightServerBase):
         self.bad_catalog_schema = bad_catalog_schema
         self.schema_mismatch = schema_mismatch
         self.empty_catalog = empty_catalog
+        self.catalog_no_endpoints = catalog_no_endpoints
 
     def get_flight_info(self, context, descriptor):
         if self.delay:
@@ -109,7 +110,8 @@ class TestFlightSqlServer(flight.FlightServerBase):
                 if envelope.get(2, b"") != b"":
                     raise ValueError("catalog command must be empty")
                 schema = pa.schema([pa.field("catalog_name", pa.string(), nullable=self.bad_catalog_schema)])
-                return flight.FlightInfo(schema, descriptor, [flight.FlightEndpoint(descriptor.command, [])], 0 if self.empty_catalog else 2, -1)
+                endpoints = [] if self.catalog_no_endpoints else [flight.FlightEndpoint(descriptor.command, [])]
+                return flight.FlightInfo(schema, descriptor, endpoints, 0 if self.empty_catalog or self.catalog_no_endpoints else 2, -1)
             query = unpack_any(descriptor.command, QUERY_TYPE)[1].decode("utf-8")
         except (KeyError, ValueError, UnicodeDecodeError) as exc:
             raise flight.FlightServerError(f"invalid SQL command: {exc}") from exc
@@ -220,8 +222,9 @@ def main():
     parser.add_argument("--bad-catalog-schema", action="store_true", help="emit nonconforming nullable catalog schema")
     parser.add_argument("--schema-mismatch", action="store_true", help="make the second endpoint use a different schema")
     parser.add_argument("--empty-catalog", action="store_true", help="return no catalog names")
+    parser.add_argument("--catalog-no-endpoints", action="store_true", help="return catalog schema with no endpoints")
     args = parser.parse_args()
-    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay, args.host, args.bad_catalog_schema, args.schema_mismatch, args.empty_catalog)
+    server = TestFlightSqlServer(args.port, args.token, args.large, args.medium, args.many, args.multi, args.unknown_count, args.delay, args.host, args.bad_catalog_schema, args.schema_mismatch, args.empty_catalog, args.catalog_no_endpoints)
     if args.self_test:
         try:
             self_test(server, args.token)

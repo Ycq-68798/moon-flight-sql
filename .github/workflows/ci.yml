@@ -90,6 +90,12 @@ jobs:
           start_server --empty-catalog
           moon run cmd/catalogs_empty --target native
           stop_server
+          start_server --catalog-no-endpoints
+          moon run cmd/catalogs_empty --target native
+          stop_server
+          start_server --catalog-no-endpoints --bad-catalog-schema
+          moon run cmd/catalogs_bad --target native
+          stop_server
           start_server --schema-mismatch
           moon run cmd/schema_mismatch --target native
           stop_server
