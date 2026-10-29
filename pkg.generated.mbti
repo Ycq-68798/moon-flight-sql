@@ -27,13 +27,18 @@ pub struct Client {
 }
 pub fn Client::close(Self) -> Unit
 pub async fn Client::connect(String, Int32) -> Self
-pub async fn Client::query(Self, String, timeout_ms? : Int32) -> Array[@arrow.IpcData]
+pub async fn Client::query(Self, String, timeout_ms? : Int32, metadata? : Array[Metadata], allow_unknown_count? : Bool) -> Array[@arrow.IpcData]
 
 pub(all) struct Endpoint {
   ticket : Bytes
   locations : Array[String]
 } derive(@debug.Debug)
 pub fn Endpoint::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Metadata {
+  name : String
+  value : String
+}
 
 // Type aliases
 

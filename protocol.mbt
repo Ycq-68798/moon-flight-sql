@@ -85,6 +85,26 @@ pub fn decode_endpoints(data : Bytes) -> Array[Endpoint] raise {
 }
 
 ///|
+/// FlightInfo.total_records is -1 when the count is unknown. A missing proto3
+/// field has the default value zero.
+fn total_records(data : Bytes) -> Int64 raise {
+  let reader = @proto.PbReader::new(data)
+  let mut total = 0L
+  while !reader.eof() {
+    let (field, wire) = reader.read_tag()
+    if field == 4 && wire == Varint {
+      total = reader.read_int64()
+    } else {
+      reader.skip(wire)
+    }
+  }
+  if total < -1L {
+    raise FlightError::Protocol("invalid total_records in FlightInfo")
+  }
+  total
+}
+
+///|
 /// Convert FlightData protobuf messages to an Arrow IPC stream. Metadata-only
 /// messages are ignored; schema, dictionary and record-batch order is preserved.
 pub fn flight_data_to_ipc(messages : Array[Bytes]) -> Bytes raise {

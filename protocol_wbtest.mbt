@@ -47,3 +47,52 @@ test "missing endpoint ticket is rejected" {
   }
   assert_true(rejected)
 }
+
+///|
+test "request metadata accepts ASCII and rejects unsafe or reserved fields" {
+  let valid = encode_metadata([
+    { name: "authorization", value: "Bearer demo-token", },
+    { name: "x-request-id", value: "request-123", },
+  ])
+  assert_eq(valid.length(), 2)
+  assert_eq(valid[0].value, b"Bearer demo-token")
+  let invalid : Array[Metadata] = [
+    { name: "Authorization", value: "x", },
+    { name: "x-test", value: "line\nbreak", },
+    { name: "grpc-timeout", value: "1S", },
+    { name: "x-test-bin", value: "binary", },
+    { name: "", value: "x", },
+    { name: ":authority", value: "x", },
+  ]
+  for entry in invalid {
+    let rejected = try {
+      let _ = encode_metadata([entry])
+      false
+    } catch {
+      FlightError::Protocol(_) => true
+      _ => false
+    }
+    assert_true(rejected)
+  }
+}
+
+///|
+test "FlightInfo count handles known, absent and unknown values" {
+  let known = @proto.PbWriter::new()
+  known.int64(4, 42L)
+  assert_eq(total_records(known.to_bytes()), 42L)
+  assert_eq(total_records(b""), 0L)
+  let unknown = @proto.PbWriter::new()
+  unknown.int64(4, -1L)
+  assert_eq(total_records(unknown.to_bytes()), -1L)
+  let invalid = @proto.PbWriter::new()
+  invalid.int64(4, -2L)
+  let rejected = try {
+    let _ = total_records(invalid.to_bytes())
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(rejected)
+}

@@ -28,5 +28,6 @@ description = "Native MoonBit Arrow Flight SQL query client"
 import {
   "moonbitlang/async@0.22.5",
   "moonbitstack/moonrpc@0.21.0",
+  "moonbitstack/moonhttp@0.15.0",
   "shunge/arrow@0.2.1",
 }

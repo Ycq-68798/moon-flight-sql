@@ -3,6 +3,7 @@ supported_targets = "native"
 import {
   "moonbitstack/moonrpc/proto",
   "moonbitstack/moonrpc/net",
+  "moonbitstack/moonhttp/header",
   "shunge/arrow",
   "moonbitlang/core/debug",
 }

@@ -70,10 +70,24 @@ def unpack_any(data, type_url):
     return parse_fields(fields[2])
 
 
+class TokenMiddleware(flight.ServerMiddlewareFactory):
+    def __init__(self, token):
+        self.expected = f"Bearer {token}"
+
+    def start_call(self, info, headers):
+        if info.method in (flight.FlightMethod.GET_FLIGHT_INFO, flight.FlightMethod.DO_GET):
+            if headers.get("authorization", []) != [self.expected]:
+                raise flight.FlightUnauthenticatedError("invalid bearer token")
+        return None
+
+
 class TestFlightSqlServer(flight.FlightServerBase):
-    def __init__(self, port):
-        super().__init__(f"grpc://127.0.0.1:{port}")
+    def __init__(self, port, token=None, large=False, unknown_count=False):
+        middleware = {"auth": TokenMiddleware(token)} if token is not None else None
+        super().__init__(f"grpc://127.0.0.1:{port}", middleware=middleware)
         self.tickets = set()
+        self.large = large
+        self.unknown_count = unknown_count
 
     def get_flight_info(self, context, descriptor):
         try:
@@ -86,7 +100,8 @@ class TestFlightSqlServer(flight.FlightServerBase):
         self.tickets.add(handle)
         ticket = pack_any(TICKET_TYPE, field(1, handle))
         endpoint = flight.FlightEndpoint(ticket, [])
-        return flight.FlightInfo(SCHEMA, descriptor, [endpoint], 4, -1)
+        total = -1 if self.unknown_count else (1 if self.large else 4)
+        return flight.FlightInfo(SCHEMA, descriptor, [endpoint], total, -1)
 
     def do_get(self, context, ticket):
         try:
@@ -96,6 +111,11 @@ class TestFlightSqlServer(flight.FlightServerBase):
         if handle not in self.tickets:
             raise flight.FlightServerError("unknown or already used ticket")
         self.tickets.remove(handle)
+        if self.large:
+            batch = pa.RecordBatch.from_pylist(
+                [{"id": 1, "name": "x" * (5 * 1024 * 1024)}], schema=SCHEMA
+            )
+            return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(SCHEMA, [batch]))
         db = sqlite3.connect(":memory:")
         try:
             db.execute("CREATE TABLE items (id INTEGER, name TEXT)")
@@ -107,18 +127,37 @@ class TestFlightSqlServer(flight.FlightServerBase):
         return flight.RecordBatchStream(pa.RecordBatchReader.from_batches(SCHEMA, batches))
 
 
-def self_test(server):
+def self_test(server, token=None):
     client = flight.FlightClient(f"grpc://127.0.0.1:{server.port}")
     command = pack_any(QUERY_TYPE, field(1, QUERY.encode()))
-    info = client.get_flight_info(flight.FlightDescriptor.for_command(command))
-    batches = list(client.do_get(info.endpoints[0].ticket))
+    descriptor = flight.FlightDescriptor.for_command(command)
+    options = None
+    if token is not None:
+        for bad in (None, "wrong"):
+            bad_options = None if bad is None else flight.FlightCallOptions(headers=[(b"authorization", f"Bearer {bad}".encode())])
+            try:
+                client.get_flight_info(descriptor, options=bad_options)
+            except flight.FlightUnauthenticatedError:
+                pass
+            else:
+                raise AssertionError("invalid token was accepted")
+        options = flight.FlightCallOptions(headers=[(b"authorization", f"Bearer {token}".encode())])
+    info = client.get_flight_info(descriptor, options=options)
+    if token is not None:
+        try:
+            client.do_get(info.endpoints[0].ticket)
+        except flight.FlightUnauthenticatedError:
+            pass
+        else:
+            raise AssertionError("DoGet accepted missing token")
+    batches = list(client.do_get(info.endpoints[0].ticket, options=options))
     assert len(batches) == 2
     assert pa.Table.from_batches([chunk.data for chunk in batches]).to_pylist() == [
         {"id": 1, "name": "alpha"}, {"id": 2, "name": None},
         {"id": 3, "name": "gamma"}, {"id": 4, "name": "delta"},
     ]
     try:
-        client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(QUERY_TYPE, field(1, b"SELECT invalid"))))
+        client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(QUERY_TYPE, field(1, b"SELECT invalid"))), options=options)
     except flight.FlightServerError:
         pass
     else:
@@ -130,11 +169,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8815)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--token", help="require this bearer token on query and retrieval")
+    parser.add_argument("--large", action="store_true", help="send a single batch exceeding 4 MiB")
+    parser.add_argument("--unknown-count", action="store_true", help="report unknown total row count")
     args = parser.parse_args()
-    server = TestFlightSqlServer(args.port)
+    server = TestFlightSqlServer(args.port, args.token, args.large, args.unknown_count)
     if args.self_test:
         try:
-            self_test(server)
+            self_test(server, args.token)
         finally:
             server.shutdown()
     else:
