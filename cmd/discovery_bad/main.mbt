@@ -40,5 +40,13 @@ async fn run() -> Unit {
   guard bad_types && bad_keys else {
     fail("invalid types or keys schema accepted")
   }
+  let bad_foreign = try {
+    let _ = client.imported_keys("orders")
+    false
+  } catch {
+    @flight.FlightError::Protocol("invalid Flight SQL metadata schema") => true
+    _ => false
+  }
+  guard bad_foreign else { fail("invalid foreign key schema accepted") }
   println("PASS: invalid metadata schemas rejected")
 }

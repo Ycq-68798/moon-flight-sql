@@ -10,7 +10,9 @@ async fn run() -> Unit {
   guard client.db_schemas().is_empty() &&
     client.tables(include_schema=true).is_empty() &&
     client.table_types().is_empty() &&
-    client.primary_keys("orders").is_empty() else {
+    client.primary_keys("orders").is_empty() &&
+    client.imported_keys("orders").is_empty() &&
+    client.exported_keys("customers").is_empty() else {
     fail("expected no endpoints")
   }
   println("PASS: empty schema and table metadata with no endpoints")

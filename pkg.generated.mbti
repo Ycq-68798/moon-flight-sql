@@ -29,6 +29,8 @@ pub async fn Client::catalogs(Self, timeout_ms? : Int32, metadata? : Array[Metad
 pub fn Client::close(Self) -> Unit
 pub async fn Client::connect(String, Int32, max_query_bytes? : Int32) -> Self
 pub async fn Client::db_schemas(Self, catalog? : String, pattern? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[DatabaseSchema]
+pub async fn Client::exported_keys(Self, String, catalog? : String, schema? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[ForeignKey]
+pub async fn Client::imported_keys(Self, String, catalog? : String, schema? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[ForeignKey]
 pub async fn Client::primary_keys(Self, String, catalog? : String, schema? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[PrimaryKey]
 pub async fn Client::query(Self, String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[@arrow.IpcData]
 pub async fn Client::table_types(Self, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[String]
@@ -47,6 +49,25 @@ pub(all) struct Endpoint {
   locations : Array[String]
 } derive(@debug.Debug)
 pub fn Endpoint::to_repr(Self) -> @debug.Repr
+
+pub(all) struct ForeignKey {
+  pk_catalog_name : String?
+  pk_schema_name : String?
+  pk_table_name : String
+  pk_column_name : String
+  fk_catalog_name : String?
+  fk_schema_name : String?
+  fk_table_name : String
+  fk_column_name : String
+  key_sequence : Int32
+  fk_key_name : String?
+  pk_key_name : String?
+  update_rule : Int32
+  delete_rule : Int32
+} derive(Eq, @debug.Debug)
+pub fn ForeignKey::equal(Self, Self) -> Bool
+pub fn ForeignKey::not_equal(Self, Self) -> Bool
+pub fn ForeignKey::to_repr(Self) -> @debug.Repr
 
 pub(all) struct Metadata {
   name : String

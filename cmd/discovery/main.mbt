@@ -91,5 +91,30 @@ async fn run() -> Unit {
     client.primary_keys("missing").is_empty() else {
     fail("primary key filters failed")
   }
-  println("PASS: schema, table, type and primary key discovery")
+  let imports = client.imported_keys("orders", catalog="main", schema="public")
+  guard imports.length() == 1 &&
+    imports[0].pk_table_name == "customers" &&
+    imports[0].fk_column_name == "customer_id" &&
+    imports[0].update_rule == 0 &&
+    imports[0].delete_rule == 2 &&
+    imports[0].key_sequence == 1 else {
+    fail("wrong imported keys")
+  }
+  guard client.exported_keys("customers").length() == 1 &&
+    client.imported_keys("missing").is_empty() &&
+    client.imported_keys("orders", catalog="", schema="").is_empty() else {
+    fail("foreign key filters failed")
+  }
+  let local_foreign_keys = client.imported_keys(
+    "local_child",
+    catalog="",
+    schema="",
+  )
+  guard local_foreign_keys.length() == 1 &&
+    local_foreign_keys[0].pk_catalog_name is None &&
+    local_foreign_keys[0].fk_key_name is None &&
+    local_foreign_keys[0].delete_rule == 4 else {
+    fail("empty foreign key filters or nullable fields failed")
+  }
+  println("PASS: schema, table, type and key discovery")
 }

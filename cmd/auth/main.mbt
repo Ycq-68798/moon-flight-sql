@@ -68,10 +68,22 @@ async fn run() -> Unit {
   guard missing_keys else {
     fail("primary key discovery accepted missing credentials")
   }
+  let missing_foreign = try {
+    let _ = client.imported_keys("orders")
+    false
+  } catch {
+    @flight.FlightError::Rpc(16, _) => true
+    _ => false
+  }
+  guard missing_foreign else {
+    fail("foreign key discovery accepted missing credentials")
+  }
   guard client.db_schemas(metadata~).length() == 3 &&
     client.tables(metadata~).length() == 4 &&
     client.table_types(metadata~).length() == 2 &&
-    client.primary_keys("orders", metadata~).length() == 2 else {
+    client.primary_keys("orders", metadata~).length() == 2 &&
+    client.imported_keys("orders", metadata~).length() == 1 &&
+    client.exported_keys("customers", metadata~).length() == 1 else {
     fail("authenticated discovery failed")
   }
   println(

@@ -423,6 +423,18 @@ fn test_command_payload(descriptor : Bytes) -> Bytes raise {
 
 ///|
 test "metadata commands preserve optional presence and repeated types" {
+  assert_eq(
+    test_command_payload(
+      foreign_keys_descriptor("CommandGetImportedKeys", "t", None, None),
+    ),
+    b"\x1a\x01t",
+  )
+  assert_eq(
+    test_command_payload(
+      foreign_keys_descriptor("CommandGetExportedKeys", "t", Some(""), Some("")),
+    ),
+    b"\x0a\x00\x12\x00\x1a\x01t",
+  )
   assert_eq(test_command_payload(table_types_descriptor()), b"")
   assert_eq(
     test_command_payload(primary_keys_descriptor("t", None, None)),

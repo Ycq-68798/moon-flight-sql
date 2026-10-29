@@ -339,3 +339,161 @@ pub async fn Client::primary_keys(
   }
   rows
 }
+
+///|
+/// A foreign-key column and the referenced primary-key column.
+pub(all) struct ForeignKey {
+  pk_catalog_name : String?
+  pk_schema_name : String?
+  pk_table_name : String
+  pk_column_name : String
+  fk_catalog_name : String?
+  fk_schema_name : String?
+  fk_table_name : String
+  fk_column_name : String
+  key_sequence : Int32
+  fk_key_name : String?
+  pk_key_name : String?
+  update_rule : Int32
+  delete_rule : Int32
+} derive(Eq, Debug)
+
+///|
+pub extend ForeignKey with Eq::{equal, not_equal}
+
+///|
+pub extend ForeignKey with @debug.Debug::{to_repr}
+
+///|
+fn foreign_keys_descriptor(
+  command : String,
+  table : String,
+  catalog : String?,
+  schema : String?,
+) -> Bytes {
+  let payload = @proto.PbWriter::new()
+  if catalog is Some(value) {
+    payload.string_(1, value)
+  }
+  if schema is Some(value) {
+    payload.string_(2, value)
+  }
+  payload.string_(3, table)
+  command_descriptor(
+    "type.googleapis.com/arrow.flight.protocol.sql." + command,
+    payload.to_bytes(),
+  )
+}
+
+///|
+async fn Client::foreign_keys(
+  self : Client,
+  command : String,
+  table : String,
+  catalog : String?,
+  schema : String?,
+  timeout_ms~ : Int32,
+  metadata~ : Array[Metadata],
+) -> Array[ForeignKey] {
+  let result = self.execute_descriptor(
+    foreign_keys_descriptor(command, table, catalog, schema),
+    timeout_ms~,
+    metadata~,
+  )
+  check_metadata_schema(result, [
+    ("pk_catalog_name", @arrow.DataType::Utf8, true),
+    ("pk_db_schema_name", @arrow.DataType::Utf8, true),
+    ("pk_table_name", @arrow.DataType::Utf8, false),
+    ("pk_column_name", @arrow.DataType::Utf8, false),
+    ("fk_catalog_name", @arrow.DataType::Utf8, true),
+    ("fk_db_schema_name", @arrow.DataType::Utf8, true),
+    ("fk_table_name", @arrow.DataType::Utf8, false),
+    ("fk_column_name", @arrow.DataType::Utf8, false),
+    ("key_sequence", @arrow.DataType::Int32, false),
+    ("fk_key_name", @arrow.DataType::Utf8, true),
+    ("pk_key_name", @arrow.DataType::Utf8, true),
+    ("update_rule", @arrow.DataType::UInt8, false),
+    ("delete_rule", @arrow.DataType::UInt8, false),
+  ])
+  let rows = []
+  for part in result.parts {
+    for batch in part.batches {
+      for i in 0..<batch.num_rows {
+        match batch.get_row(i) {
+          [
+            pk_cat,
+            pk_schema,
+            Some(@arrow.Value::Utf8Value(pk_table)),
+            Some(@arrow.Value::Utf8Value(pk_column)),
+            fk_cat,
+            fk_schema,
+            Some(@arrow.Value::Utf8Value(fk_table)),
+            Some(@arrow.Value::Utf8Value(fk_column)),
+            Some(@arrow.Value::Int32Value(sequence)),
+            fk_key,
+            pk_key,
+            Some(@arrow.Value::UInt8Value(update)),
+            Some(@arrow.Value::UInt8Value(delete)),
+          ] =>
+            rows.push({
+              pk_catalog_name: optional_text(pk_cat),
+              pk_schema_name: optional_text(pk_schema),
+              pk_table_name: pk_table,
+              pk_column_name: pk_column,
+              fk_catalog_name: optional_text(fk_cat),
+              fk_schema_name: optional_text(fk_schema),
+              fk_table_name: fk_table,
+              fk_column_name: fk_column,
+              key_sequence: sequence,
+              fk_key_name: optional_text(fk_key),
+              pk_key_name: optional_text(pk_key),
+              update_rule: update,
+              delete_rule: delete,
+            })
+          _ => raise FlightError::Protocol("invalid Flight SQL metadata value")
+        }
+      }
+    }
+  }
+  rows
+}
+
+///|
+/// Retrieve keys imported by a table. Optional filters preserve empty strings.
+pub async fn Client::imported_keys(
+  self : Client,
+  table : String,
+  catalog? : String,
+  schema? : String,
+  timeout_ms~ : Int32 = 30000,
+  metadata~ : Array[Metadata] = [],
+) -> Array[ForeignKey] {
+  self.foreign_keys(
+    "CommandGetImportedKeys",
+    table,
+    catalog,
+    schema,
+    timeout_ms~,
+    metadata~,
+  )
+}
+
+///|
+/// Retrieve keys exported by a table. Optional filters preserve empty strings.
+pub async fn Client::exported_keys(
+  self : Client,
+  table : String,
+  catalog? : String,
+  schema? : String,
+  timeout_ms~ : Int32 = 30000,
+  metadata~ : Array[Metadata] = [],
+) -> Array[ForeignKey] {
+  self.foreign_keys(
+    "CommandGetExportedKeys",
+    table,
+    catalog,
+    schema,
+    timeout_ms~,
+    metadata~,
+  )
+}

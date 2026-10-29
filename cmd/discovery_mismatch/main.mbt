@@ -38,5 +38,17 @@ async fn run() -> Unit {
   guard keys_rejected && types_rejected else {
     fail("inconsistent key or type schema accepted")
   }
+  let foreign_rejected = try {
+    let _ = client.exported_keys("customers")
+    false
+  } catch {
+    @flight.FlightError::Protocol(
+      "Flight endpoint schema differs from FlightInfo or other endpoints"
+    ) => true
+    _ => false
+  }
+  guard foreign_rejected else {
+    fail("foreign key endpoint schema mismatch accepted")
+  }
   println("PASS: metadata endpoint schema mismatch rejected")
 }

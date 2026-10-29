@@ -20,6 +20,8 @@ SCHEMAS_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetDbSchem
 TABLES_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetTables"
 TYPES_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetTableTypes"
 PRIMARY_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetPrimaryKeys"
+IMPORTED_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetImportedKeys"
+EXPORTED_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetExportedKeys"
 TICKET_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.TicketStatementQuery"
 QUERY = "SELECT id, name FROM items ORDER BY id"
 SCHEMA = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.string())])
@@ -91,6 +93,25 @@ def metadata_result(kind, request, bad_schema=False):
             if not matches_catalog(cat) or (schema_filter is not None and (group is not None if schema_filter == "" else group != schema_filter)) or table != optional(3):
                 continue
             rows.append(dict(zip(schema.names, (cat, group, table, column, key, sequence))))
+    elif kind in (IMPORTED_TYPE, EXPORTED_TYPE):
+        schema = pa.schema([
+            pa.field("pk_catalog_name", pa.string()), pa.field("pk_db_schema_name", pa.string()),
+            pa.field("pk_table_name", pa.string(), nullable=False), pa.field("pk_column_name", pa.string(), nullable=False),
+            pa.field("fk_catalog_name", pa.string()), pa.field("fk_db_schema_name", pa.string()),
+            pa.field("fk_table_name", pa.string(), nullable=False), pa.field("fk_column_name", pa.string(), nullable=False),
+            pa.field("key_sequence", pa.int32(), nullable=False), pa.field("fk_key_name", pa.string()),
+            pa.field("pk_key_name", pa.string()), pa.field("update_rule", pa.uint8(), nullable=False),
+            pa.field("delete_rule", pa.uint8(), nullable=False)])
+        # The imported-key table is the foreign table; the exported-key table is its parent.
+        candidates = [("main", "public", "customers", "id", "main", "public", "orders", "customer_id", 1, "orders_customer_fk", "customers_pk", 0, 2),
+                      (None, None, "local_parent", "id", None, None, "local_child", "parent_id", 1, None, None, 3, 4)]
+        rows = []
+        for values in candidates:
+            cat, group, table = values[4:7] if kind == IMPORTED_TYPE else values[:3]
+            schema_filter = optional(2)
+            if not matches_catalog(cat) or (schema_filter is not None and (group is not None if schema_filter == "" else group != schema_filter)) or table != optional(3):
+                continue
+            rows.append(dict(zip(schema.names, values)))
     else:
         include = bool(args.get(5, [0])[-1])
         fields = [pa.field("catalog_name", pa.string()), pa.field("db_schema_name", pa.string()), pa.field("table_name", pa.string(), nullable=False), pa.field("table_type", pa.string(), nullable=False)]
@@ -203,7 +224,7 @@ class TestFlightSqlServer(flight.FlightServerBase):
             time.sleep(self.delay)
         try:
             envelope = parse_fields(descriptor.command)
-            if envelope.get(1) in (SCHEMAS_TYPE, TABLES_TYPE, TYPES_TYPE, PRIMARY_TYPE):
+            if envelope.get(1) in (SCHEMAS_TYPE, TABLES_TYPE, TYPES_TYPE, PRIMARY_TYPE, IMPORTED_TYPE, EXPORTED_TYPE):
                 kind, request = envelope[1], envelope.get(2, b"")
                 schema, rows = metadata_result(kind, request, self.bad_metadata_schema)
                 endpoints = []
@@ -322,6 +343,14 @@ def self_test(server, token=None):
     keys_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(PRIMARY_TYPE, key_request)), options=options)
     keys = client.do_get(keys_info.endpoints[0].ticket, options=options).read_all().to_pylist()
     assert [(key["column_name"], key["key_sequence"]) for key in keys] == [("order_id", 1), ("region", 2)]
+    fk_request = field(1, b"main") + field(2, b"public") + field(3, b"orders")
+    fk_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(IMPORTED_TYPE, fk_request)), options=options)
+    fk = client.do_get(fk_info.endpoints[0].ticket, options=options).read_all().to_pylist()
+    assert len(fk) == 1 and fk[0]["pk_table_name"] == "customers" and fk[0]["delete_rule"] == 2
+    exported_request = field(3, b"customers")
+    exported_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(EXPORTED_TYPE, exported_request)), options=options)
+    exported = client.do_get(exported_info.endpoints[0].ticket, options=options).read_all().to_pylist()
+    assert exported == fk
     try:
         client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(QUERY_TYPE, field(1, b"SELECT invalid"))), options=options)
     except flight.FlightServerError:
