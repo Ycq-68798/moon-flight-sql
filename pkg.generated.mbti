@@ -28,6 +28,7 @@ pub struct Client {
 pub async fn Client::catalogs(Self, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[String]
 pub fn Client::close(Self) -> Unit
 pub async fn Client::connect(String, Int32, max_query_bytes? : Int32) -> Self
+pub async fn Client::cross_reference(Self, String, String, pk_catalog? : String, pk_schema? : String, fk_catalog? : String, fk_schema? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[ForeignKey]
 pub async fn Client::db_schemas(Self, catalog? : String, pattern? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[DatabaseSchema]
 pub async fn Client::exported_keys(Self, String, catalog? : String, schema? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[ForeignKey]
 pub async fn Client::imported_keys(Self, String, catalog? : String, schema? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[ForeignKey]

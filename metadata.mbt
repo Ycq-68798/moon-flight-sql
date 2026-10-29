@@ -388,18 +388,11 @@ fn foreign_keys_descriptor(
 ///|
 async fn Client::foreign_keys(
   self : Client,
-  command : String,
-  table : String,
-  catalog : String?,
-  schema : String?,
+  descriptor : Bytes,
   timeout_ms~ : Int32,
   metadata~ : Array[Metadata],
 ) -> Array[ForeignKey] {
-  let result = self.execute_descriptor(
-    foreign_keys_descriptor(command, table, catalog, schema),
-    timeout_ms~,
-    metadata~,
-  )
+  let result = self.execute_descriptor(descriptor, timeout_ms~, metadata~)
   check_metadata_schema(result, [
     ("pk_catalog_name", @arrow.DataType::Utf8, true),
     ("pk_db_schema_name", @arrow.DataType::Utf8, true),
@@ -469,10 +462,7 @@ pub async fn Client::imported_keys(
   metadata~ : Array[Metadata] = [],
 ) -> Array[ForeignKey] {
   self.foreign_keys(
-    "CommandGetImportedKeys",
-    table,
-    catalog,
-    schema,
+    foreign_keys_descriptor("CommandGetImportedKeys", table, catalog, schema),
     timeout_ms~,
     metadata~,
   )
@@ -489,10 +479,61 @@ pub async fn Client::exported_keys(
   metadata~ : Array[Metadata] = [],
 ) -> Array[ForeignKey] {
   self.foreign_keys(
-    "CommandGetExportedKeys",
-    table,
-    catalog,
-    schema,
+    foreign_keys_descriptor("CommandGetExportedKeys", table, catalog, schema),
+    timeout_ms~,
+    metadata~,
+  )
+}
+
+///|
+fn cross_reference_descriptor(
+  pk_table : String,
+  fk_table : String,
+  pk_catalog : String?,
+  pk_schema : String?,
+  fk_catalog : String?,
+  fk_schema : String?,
+) -> Bytes {
+  let payload = @proto.PbWriter::new()
+  if pk_catalog is Some(value) {
+    payload.string_(1, value)
+  }
+  if pk_schema is Some(value) {
+    payload.string_(2, value)
+  }
+  payload.string_(3, pk_table)
+  if fk_catalog is Some(value) {
+    payload.string_(4, value)
+  }
+  if fk_schema is Some(value) {
+    payload.string_(5, value)
+  }
+  payload.string_(6, fk_table)
+  command_descriptor(
+    "type.googleapis.com/arrow.flight.protocol.sql.CommandGetCrossReference",
+    payload.to_bytes(),
+  )
+}
+
+///|
+/// Find foreign keys linking the named parent and foreign tables. Empty optional
+/// catalog/schema filters select entries with no catalog/schema; omission leaves
+/// the corresponding filter unspecified.
+pub async fn Client::cross_reference(
+  self : Client,
+  pk_table : String,
+  fk_table : String,
+  pk_catalog? : String,
+  pk_schema? : String,
+  fk_catalog? : String,
+  fk_schema? : String,
+  timeout_ms~ : Int32 = 30000,
+  metadata~ : Array[Metadata] = [],
+) -> Array[ForeignKey] {
+  self.foreign_keys(
+    cross_reference_descriptor(
+      pk_table, fk_table, pk_catalog, pk_schema, fk_catalog, fk_schema,
+    ),
     timeout_ms~,
     metadata~,
   )

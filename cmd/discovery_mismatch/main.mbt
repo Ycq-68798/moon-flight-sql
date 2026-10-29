@@ -50,5 +50,17 @@ async fn run() -> Unit {
   guard foreign_rejected else {
     fail("foreign key endpoint schema mismatch accepted")
   }
+  let cross_rejected = try {
+    let _ = client.cross_reference("customers", "orders")
+    false
+  } catch {
+    @flight.FlightError::Protocol(
+      "Flight endpoint schema differs from FlightInfo or other endpoints"
+    ) => true
+    _ => false
+  }
+  guard cross_rejected else {
+    fail("cross reference endpoint schema mismatch accepted")
+  }
   println("PASS: metadata endpoint schema mismatch rejected")
 }

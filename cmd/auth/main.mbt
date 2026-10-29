@@ -78,12 +78,23 @@ async fn run() -> Unit {
   guard missing_foreign else {
     fail("foreign key discovery accepted missing credentials")
   }
+  let missing_cross = try {
+    let _ = client.cross_reference("customers", "orders")
+    false
+  } catch {
+    @flight.FlightError::Rpc(16, _) => true
+    _ => false
+  }
+  guard missing_cross else {
+    fail("cross reference accepted missing credentials")
+  }
   guard client.db_schemas(metadata~).length() == 3 &&
     client.tables(metadata~).length() == 4 &&
     client.table_types(metadata~).length() == 2 &&
     client.primary_keys("orders", metadata~).length() == 2 &&
     client.imported_keys("orders", metadata~).length() == 1 &&
-    client.exported_keys("customers", metadata~).length() == 1 else {
+    client.exported_keys("customers", metadata~).length() == 1 &&
+    client.cross_reference("customers", "orders", metadata~).length() == 1 else {
     fail("authenticated discovery failed")
   }
   println(

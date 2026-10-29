@@ -48,5 +48,13 @@ async fn run() -> Unit {
     _ => false
   }
   guard bad_foreign else { fail("invalid foreign key schema accepted") }
+  let bad_cross = try {
+    let _ = client.cross_reference("customers", "orders")
+    false
+  } catch {
+    @flight.FlightError::Protocol("invalid Flight SQL metadata schema") => true
+    _ => false
+  }
+  guard bad_cross else { fail("invalid cross reference schema accepted") }
   println("PASS: invalid metadata schemas rejected")
 }

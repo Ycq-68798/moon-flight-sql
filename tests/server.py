@@ -22,6 +22,7 @@ TYPES_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetTableType
 PRIMARY_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetPrimaryKeys"
 IMPORTED_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetImportedKeys"
 EXPORTED_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetExportedKeys"
+CROSS_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetCrossReference"
 TICKET_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.TicketStatementQuery"
 QUERY = "SELECT id, name FROM items ORDER BY id"
 SCHEMA = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.string())])
@@ -93,7 +94,7 @@ def metadata_result(kind, request, bad_schema=False):
             if not matches_catalog(cat) or (schema_filter is not None and (group is not None if schema_filter == "" else group != schema_filter)) or table != optional(3):
                 continue
             rows.append(dict(zip(schema.names, (cat, group, table, column, key, sequence))))
-    elif kind in (IMPORTED_TYPE, EXPORTED_TYPE):
+    elif kind in (IMPORTED_TYPE, EXPORTED_TYPE, CROSS_TYPE):
         schema = pa.schema([
             pa.field("pk_catalog_name", pa.string()), pa.field("pk_db_schema_name", pa.string()),
             pa.field("pk_table_name", pa.string(), nullable=False), pa.field("pk_column_name", pa.string(), nullable=False),
@@ -107,10 +108,18 @@ def metadata_result(kind, request, bad_schema=False):
                       (None, None, "local_parent", "id", None, None, "local_child", "parent_id", 1, None, None, 3, 4)]
         rows = []
         for values in candidates:
-            cat, group, table = values[4:7] if kind == IMPORTED_TYPE else values[:3]
-            schema_filter = optional(2)
-            if not matches_catalog(cat) or (schema_filter is not None and (group is not None if schema_filter == "" else group != schema_filter)) or table != optional(3):
-                continue
+            def matches_optional(value, tag):
+                expected = optional(tag)
+                return expected is None or (value is None if expected == "" else value == expected)
+            if kind == CROSS_TYPE:
+                if not all((matches_optional(values[0], 1), matches_optional(values[1], 2),
+                            values[2] == optional(3), matches_optional(values[4], 4),
+                            matches_optional(values[5], 5), values[6] == optional(6))):
+                    continue
+            else:
+                cat, group, table = values[4:7] if kind == IMPORTED_TYPE else values[:3]
+                if not matches_optional(cat, 1) or not matches_optional(group, 2) or table != optional(3):
+                    continue
             rows.append(dict(zip(schema.names, values)))
     else:
         include = bool(args.get(5, [0])[-1])
@@ -224,7 +233,7 @@ class TestFlightSqlServer(flight.FlightServerBase):
             time.sleep(self.delay)
         try:
             envelope = parse_fields(descriptor.command)
-            if envelope.get(1) in (SCHEMAS_TYPE, TABLES_TYPE, TYPES_TYPE, PRIMARY_TYPE, IMPORTED_TYPE, EXPORTED_TYPE):
+            if envelope.get(1) in (SCHEMAS_TYPE, TABLES_TYPE, TYPES_TYPE, PRIMARY_TYPE, IMPORTED_TYPE, EXPORTED_TYPE, CROSS_TYPE):
                 kind, request = envelope[1], envelope.get(2, b"")
                 schema, rows = metadata_result(kind, request, self.bad_metadata_schema)
                 endpoints = []
@@ -351,6 +360,9 @@ def self_test(server, token=None):
     exported_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(EXPORTED_TYPE, exported_request)), options=options)
     exported = client.do_get(exported_info.endpoints[0].ticket, options=options).read_all().to_pylist()
     assert exported == fk
+    cross_request = field(1, b"main") + field(2, b"public") + field(3, b"customers") + field(4, b"main") + field(5, b"public") + field(6, b"orders")
+    cross_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(CROSS_TYPE, cross_request)), options=options)
+    assert client.do_get(cross_info.endpoints[0].ticket, options=options).read_all().to_pylist() == fk
     try:
         client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(QUERY_TYPE, field(1, b"SELECT invalid"))), options=options)
     except flight.FlightServerError:

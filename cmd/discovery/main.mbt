@@ -116,5 +116,34 @@ async fn run() -> Unit {
     local_foreign_keys[0].delete_rule == 4 else {
     fail("empty foreign key filters or nullable fields failed")
   }
+  let refs = client.cross_reference(
+    "customers",
+    "orders",
+    pk_catalog="main",
+    pk_schema="public",
+    fk_catalog="main",
+    fk_schema="public",
+  )
+  guard refs == imports else {
+    fail("cross reference did not return matching keys")
+  }
+  guard client.cross_reference("customers", "missing").is_empty() &&
+    client.cross_reference("customers", "orders", fk_catalog="").is_empty() &&
+    client.cross_reference("customers", "orders", pk_schema="").is_empty() &&
+    client.cross_reference("customers", "orders", pk_catalog="").is_empty() &&
+    client.cross_reference("customers", "orders", fk_schema="").is_empty() else {
+    fail("cross reference filtering failed")
+  }
+  let local_refs = client.cross_reference(
+    "local_parent",
+    "local_child",
+    pk_catalog="",
+    pk_schema="",
+    fk_catalog="",
+    fk_schema="",
+  )
+  guard local_refs.length() == 1 && local_refs[0].pk_key_name is None else {
+    fail("cross reference empty presence or nullable values failed")
+  }
   println("PASS: schema, table, type and key discovery")
 }
