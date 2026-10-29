@@ -28,7 +28,17 @@ pub struct Client {
 pub async fn Client::catalogs(Self, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[String]
 pub fn Client::close(Self) -> Unit
 pub async fn Client::connect(String, Int32, max_query_bytes? : Int32) -> Self
+pub async fn Client::db_schemas(Self, catalog? : String, pattern? : String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[DatabaseSchema]
 pub async fn Client::query(Self, String, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[@arrow.IpcData]
+pub async fn Client::tables(Self, catalog? : String, schema_pattern? : String, table_pattern? : String, table_types? : Array[String], include_schema? : Bool, timeout_ms? : Int32, metadata? : Array[Metadata]) -> Array[TableInfo]
+
+pub(all) struct DatabaseSchema {
+  catalog_name : String?
+  schema_name : String
+} derive(Eq, @debug.Debug)
+pub fn DatabaseSchema::equal(Self, Self) -> Bool
+pub fn DatabaseSchema::not_equal(Self, Self) -> Bool
+pub fn DatabaseSchema::to_repr(Self) -> @debug.Repr
 
 pub(all) struct Endpoint {
   ticket : Bytes
@@ -42,6 +52,17 @@ pub(all) struct Metadata {
 }
 
 type SafeChannel
+
+pub(all) struct TableInfo {
+  catalog_name : String?
+  schema_name : String?
+  table_name : String
+  table_type : String
+  table_schema : Bytes?
+} derive(Eq, @debug.Debug)
+pub fn TableInfo::equal(Self, Self) -> Bool
+pub fn TableInfo::not_equal(Self, Self) -> Bool
+pub fn TableInfo::to_repr(Self) -> @debug.Repr
 
 // Type aliases
 

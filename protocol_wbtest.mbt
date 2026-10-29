@@ -395,3 +395,64 @@ test "catalogs validate FlightInfo schema even with no endpoints" {
   }
   assert_true(missing_rejected)
 }
+
+///|
+fn test_command_payload(descriptor : Bytes) -> Bytes raise {
+  let outer = @proto.PbReader::new(descriptor)
+  let mut any : Bytes = b""
+  while !outer.eof() {
+    let (field, wire) = outer.read_tag()
+    if field == 2 && wire == LengthDelim {
+      any = outer.read_bytes()
+    } else {
+      outer.skip(wire)
+    }
+  }
+  let inner = @proto.PbReader::new(any)
+  let mut value : Bytes = b""
+  while !inner.eof() {
+    let (field, wire) = inner.read_tag()
+    if field == 2 && wire == LengthDelim {
+      value = inner.read_bytes()
+    } else {
+      inner.skip(wire)
+    }
+  }
+  value
+}
+
+///|
+test "metadata commands preserve optional presence and repeated types" {
+  assert_eq(test_command_payload(db_schemas_descriptor(None, None)), b"")
+  assert_eq(
+    test_command_payload(db_schemas_descriptor(Some(""), None)),
+    b"\x0a\x00",
+  )
+  assert_eq(
+    test_command_payload(db_schemas_descriptor(None, Some(""))),
+    b"\x12\x00",
+  )
+  assert_eq(
+    test_command_payload(
+      tables_descriptor(None, None, None, ["TABLE", "VIEW"], true),
+    ),
+    b"\x22\x05TABLE\x22\x04VIEW\x28\x01",
+  )
+  assert_eq(
+    test_command_payload(tables_descriptor(Some(""), None, Some(""), [], false)),
+    b"\x0a\x00\x1a\x00",
+  )
+}
+
+///|
+test "metadata discovery requires schema even with zero endpoints" {
+  let result : DescriptorResult = { schema: None, parts: [], }
+  let rejected = try {
+    check_metadata_schema(result, [("name", @arrow.DataType::Utf8, false)])
+    false
+  } catch {
+    FlightError::Protocol("missing Flight SQL metadata schema") => true
+    _ => false
+  }
+  assert_true(rejected)
+}

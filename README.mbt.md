@@ -36,13 +36,15 @@ fn main {
 
 `client.catalogs()` returns catalog names using Flight SQL `CommandGetCatalogs`. It accepts the same `metadata` and `timeout_ms` options as `query`, and checks the required non-null UTF-8 `catalog_name` schema.
 
+`client.db_schemas(catalog?, pattern?)` and `client.tables(catalog?, schema_pattern?, table_pattern?, table_types~, include_schema~)` discover database schemas and tables. Omitting `catalog` applies no catalog filter; explicitly passing `catalog=""` requests entries without a catalog. Schema and table patterns use the server's SQL LIKE semantics (`%` and `_`). An empty `table_types` array leaves table types unrestricted. With `include_schema=true`, each `TableInfo.table_schema` contains the server-provided Arrow IPC schema bytes; this API checks the column type and non-nullness but does not decode or validate the bytes. Both methods accept `metadata` and `timeout_ms` like `query`.
+
 For an empty catalog response with no endpoints, `catalogs()` validates the schema in `FlightInfo` and returns an empty list. If both the schema and endpoints are absent, it raises `FlightError::Protocol` because the catalog schema cannot be checked.
 
 The host may be a DNS name such as `localhost`, an IPv4 address, or an unbracketed IPv6 literal such as `::1`; pass the port separately. The client sends the host and port as HTTP/2 `:authority`, adding brackets around IPv6 literals. URI schemes, bracketed IPv6 inputs and IPv6 zone identifiers are rejected.
 
 Optional `metadata` is sent with both `GetFlightInfo` and each `DoGet` request. For example, pass `metadata=[{ name: "authorization", value: "Bearer TOKEN" }]`. Names use lowercase ASCII; values use printable ASCII. Binary and reserved gRPC metadata are rejected. The current connection is plaintext h2c: credentials and query data are visible on the network, so use this only within a protected local connection or tunnel.
 
-The client accepts `FlightInfo.total_records = -1` (unknown). When the server provides a count, the client compares it with the decoded total across endpoints. It checks each endpoint's field names, types, nullability and child fields against the FlightInfo schema; if FlightInfo omits its schema, the first endpoint is used as the reference. Custom Arrow metadata is not compared. A matching count and schema do not validate individual values, detect all corruption, or exclude offsetting errors across endpoints.
+The client accepts `FlightInfo.total_records = -1` (unknown). When the server provides a count, the client compares it with the decoded total across endpoints. It checks each endpoint's field names, physical Arrow types, nullability and child fields against the FlightInfo schema; if FlightInfo omits its schema, the first endpoint is used as the reference. Arrow metadata, including extension-type metadata, is not compared, so this is not a check of full schema semantics. A matching count and structure do not validate individual values, detect all corruption, or exclude offsetting errors across endpoints.
 
 ## Verify
 
@@ -65,6 +67,8 @@ For authentication, run `python tests/server.py --port 8815 --token demo-token` 
 
 For address handling, use the default server and run `moon run cmd/address --target native` for DNS, IPv4 and invalid inputs. Run `python tests/server.py --host ::1 --port 8816` and `moon run cmd/ipv6 --target native` for IPv6 loopback; IPv6 must be enabled on the host. Additional fixture modes `--empty-catalog`, `--bad-catalog-schema` and `--schema-mismatch` are exercised by the correspondingly named commands in CI. The `tests/header_attack.py` fixture exercises repeated and oversized response headers.
 
+With the default server, `moon run cmd/discovery --target native` checks schema and table discovery, filters and serialized table schema. The fixture modes `--metadata-no-endpoints`, `--bad-metadata-schema` and `--metadata-schema-mismatch` exercise empty and invalid discovery responses; CI runs their corresponding `cmd/discovery_*` tests.
+
 ## Current scope
 
 - Unencrypted h2c and sequential use of one connection. Concurrent queries on one client are rejected. TLS and authentication handshake are not implemented. The current async TLS API does not expose the ALPN negotiation required by standard gRPC, while MoonRPC's HTTP/2 engine fixes `:scheme` to `http`. Bearer credentials can be passed as metadata over a protected connection.
@@ -72,6 +76,6 @@ For address handling, use the default server and run `moon run cmd/address --tar
 - Responses are buffered in memory before decoding, not streamed. `max_query_bytes` bounds received HTTP/2 frame bytes across a query, not process peak memory; HPACK expansion, framing copies and decoded Arrow values can require more memory. Arrow types and IPC compression are limited by MoonArrow's reader.
 - MoonRPC 0.21.0 caps a single gRPC message at 4 MiB and may silently discard an oversized message. This client uses its own sequential socket driver around MoonRPC's HTTP/2 engine and checks the gRPC length prefix before passing each DATA frame to that engine. A message exceeding 4 MiB raises `FlightError::Rpc(8, ...)` and closes the connection; reconnect to continue. It does not receive batches larger than 4 MiB. Truncated gRPC messages and compressed gRPC messages are rejected; the latter avoids unchecked expansion in the dependency.
 - Unexpected response DATA or header streams, unsolicited CONTINUATION frames, interleaved header blocks, and server push are rejected before they reach the MoonRPC engine. HTTP/2 connection control frames remain accepted.
-- Statement query and catalog listing are implemented. Prepared statements, parameter binding, transactions, cancellation and other SQL metadata APIs are not implemented. The project is an interoperability prototype rather than a complete Flight SQL driver.
+- Statement queries and catalog, database schema and table discovery are implemented. Prepared statements, parameter binding, transactions, cancellation and other SQL metadata APIs are not implemented. The project is an interoperability prototype rather than a complete Flight SQL driver.
 
 Protocol references: [Flight.proto](https://github.com/apache/arrow/blob/main/format/Flight.proto) and [FlightSql.proto](https://github.com/apache/arrow/blob/main/format/FlightSql.proto).

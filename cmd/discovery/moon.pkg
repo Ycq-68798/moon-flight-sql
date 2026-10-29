@@ -1,0 +1,9 @@
+import {
+  "Ycq-68798/moon-flight-sql" @flight,
+  "moonbitlang/async",
+  "shunge/arrow",
+}
+
+pkgtype(kind: "executable")
+
+supported_targets = "native"

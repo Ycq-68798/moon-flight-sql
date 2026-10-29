@@ -37,6 +37,31 @@ async fn run() -> Unit {
   guard names is ["main", "warehouse"] else {
     fail("expected authenticated catalogs")
   }
+  let missing = try {
+    let _ = client.db_schemas()
+    false
+  } catch {
+    @flight.FlightError::Rpc(16, _) => true
+    _ => false
+  }
+  guard missing else { fail("schema discovery accepted missing credentials") }
+  let wrong = try {
+    let _ = client.tables(metadata=[
+      { name: "authorization", value: "Bearer wrong", },
+    ])
+    false
+  } catch {
+    @flight.FlightError::Rpc(16, _) => true
+    _ => false
+  }
+  guard wrong else { fail("table discovery accepted wrong credentials") }
+  let metadata : Array[@flight.Metadata] = [
+    { name: "authorization", value: "Bearer demo-token", },
+  ]
+  guard client.db_schemas(metadata~).length() == 3 &&
+    client.tables(metadata~).length() == 4 else {
+    fail("authenticated discovery failed")
+  }
   println(
     "PASS: missing and wrong token rejected; authenticated query returned two batches",
   )

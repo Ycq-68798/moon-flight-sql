@@ -62,6 +62,7 @@ jobs:
           start_server
           moon run cmd/main --target native
           moon run cmd/catalogs --target native
+          moon run cmd/discovery --target native
           moon run cmd/address --target native
           if python -c 'import socket; s=socket.socket(socket.AF_INET6); s.bind(("::1", 0)); s.close()' 2>/dev/null; then
             python tests/server.py --host ::1 --port 8816 > server-ipv6.log 2>&1 &
@@ -98,6 +99,15 @@ jobs:
           stop_server
           start_server --schema-mismatch
           moon run cmd/schema_mismatch --target native
+          stop_server
+          start_server --metadata-no-endpoints
+          moon run cmd/discovery_empty --target native
+          stop_server
+          start_server --metadata-no-endpoints --bad-metadata-schema
+          moon run cmd/discovery_bad --target native
+          stop_server
+          start_server --metadata-schema-mismatch
+          moon run cmd/discovery_mismatch --target native
           stop_server
           start_server --many
           moon run cmd/limit --target native
