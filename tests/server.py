@@ -18,6 +18,8 @@ QUERY_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandStatementQue
 CATALOGS_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetCatalogs"
 SCHEMAS_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetDbSchemas"
 TABLES_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetTables"
+TYPES_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetTableTypes"
+PRIMARY_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.CommandGetPrimaryKeys"
 TICKET_TYPE = b"type.googleapis.com/arrow.flight.protocol.sql.TicketStatementQuery"
 QUERY = "SELECT id, name FROM items ORDER BY id"
 SCHEMA = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.string())])
@@ -75,6 +77,20 @@ def metadata_result(kind, request, bad_schema=False):
     if kind == SCHEMAS_TYPE:
         schema = pa.schema([pa.field("catalog_name", pa.string()), pa.field("db_schema_name", pa.string(), nullable=False)])
         rows = [{"catalog_name": cat, "db_schema_name": name} for cat, name in schemas if matches_catalog(cat) and matches_pattern(name, optional(2))]
+    elif kind == TYPES_TYPE:
+        if request:
+            raise ValueError("table types command must be empty")
+        schema = pa.schema([pa.field("table_type", pa.string(), nullable=False)])
+        rows = [{"table_type": "TABLE"}, {"table_type": "VIEW"}]
+    elif kind == PRIMARY_TYPE:
+        schema = pa.schema([pa.field("catalog_name", pa.string()), pa.field("db_schema_name", pa.string()), pa.field("table_name", pa.string(), nullable=False), pa.field("column_name", pa.string(), nullable=False), pa.field("key_name", pa.string()), pa.field("key_sequence", pa.int32(), nullable=False)])
+        candidates = [(None, None, "local_tbl", "id", None, 1), ("main", "public", "orders", "order_id", "orders_pk", 1), ("main", "public", "orders", "region", "orders_pk", 2)]
+        rows = []
+        for cat, group, table, column, key, sequence in candidates:
+            schema_filter = optional(2)
+            if not matches_catalog(cat) or (schema_filter is not None and (group is not None if schema_filter == "" else group != schema_filter)) or table != optional(3):
+                continue
+            rows.append(dict(zip(schema.names, (cat, group, table, column, key, sequence))))
     else:
         include = bool(args.get(5, [0])[-1])
         fields = [pa.field("catalog_name", pa.string()), pa.field("db_schema_name", pa.string()), pa.field("table_name", pa.string(), nullable=False), pa.field("table_type", pa.string(), nullable=False)]
@@ -90,9 +106,10 @@ def metadata_result(kind, request, bad_schema=False):
                 row["table_schema"] = pa.schema([pa.field("id", pa.int64())]).serialize().to_pybytes()
             rows.append(row)
     if bad_schema:
-        schema = schema.set(0, pa.field("wrong_catalog", pa.string()))
+        original = schema.field(0)
+        schema = schema.set(0, pa.field("wrong_column", original.type, nullable=original.nullable))
         for row in rows:
-            row["wrong_catalog"] = row.pop("catalog_name")
+            row["wrong_column"] = row.pop(original.name)
     return schema, rows
 
 
@@ -186,11 +203,11 @@ class TestFlightSqlServer(flight.FlightServerBase):
             time.sleep(self.delay)
         try:
             envelope = parse_fields(descriptor.command)
-            if envelope.get(1) in (SCHEMAS_TYPE, TABLES_TYPE):
+            if envelope.get(1) in (SCHEMAS_TYPE, TABLES_TYPE, TYPES_TYPE, PRIMARY_TYPE):
                 kind, request = envelope[1], envelope.get(2, b"")
                 schema, rows = metadata_result(kind, request, self.bad_metadata_schema)
                 endpoints = []
-                for index in range(0 if self.metadata_no_endpoints else (2 if self.metadata_schema_mismatch else 1)):
+                for index in range(0 if self.metadata_no_endpoints else (2 if self.metadata_schema_mismatch or self.multi else 1)):
                     ticket = b"metadata:" + uuid.uuid4().bytes
                     self.metadata_tickets[ticket] = (kind, request, self.metadata_schema_mismatch and index == 1)
                     endpoints.append(flight.FlightEndpoint(ticket, []))
@@ -299,6 +316,12 @@ def self_test(server, token=None):
     table_rows = client.do_get(table_info.endpoints[0].ticket, options=options).read_all().to_pylist()
     assert len(table_rows) == 1 and table_rows[0]["table_name"] == "order_view"
     assert pa.ipc.read_schema(pa.BufferReader(table_rows[0]["table_schema"])).field(0).name == "id"
+    types_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(TYPES_TYPE, b"")), options=options)
+    assert client.do_get(types_info.endpoints[0].ticket, options=options).read_all().to_pylist() == [{"table_type": "TABLE"}, {"table_type": "VIEW"}]
+    key_request = field(1, b"main") + field(2, b"public") + field(3, b"orders")
+    keys_info = client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(PRIMARY_TYPE, key_request)), options=options)
+    keys = client.do_get(keys_info.endpoints[0].ticket, options=options).read_all().to_pylist()
+    assert [(key["column_name"], key["key_sequence"]) for key in keys] == [("order_id", 1), ("region", 2)]
     try:
         client.get_flight_info(flight.FlightDescriptor.for_command(pack_any(QUERY_TYPE, field(1, b"SELECT invalid"))), options=options)
     except flight.FlightServerError:

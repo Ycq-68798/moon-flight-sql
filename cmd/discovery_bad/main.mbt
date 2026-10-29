@@ -23,5 +23,22 @@ async fn run() -> Unit {
     _ => false
   }
   guard bad_tables else { fail("invalid table list schema accepted") }
+  let bad_types = try {
+    let _ = client.table_types()
+    false
+  } catch {
+    @flight.FlightError::Protocol("invalid Flight SQL metadata schema") => true
+    _ => false
+  }
+  let bad_keys = try {
+    let _ = client.primary_keys("orders")
+    false
+  } catch {
+    @flight.FlightError::Protocol("invalid Flight SQL metadata schema") => true
+    _ => false
+  }
+  guard bad_types && bad_keys else {
+    fail("invalid types or keys schema accepted")
+  }
   println("PASS: invalid metadata schemas rejected")
 }

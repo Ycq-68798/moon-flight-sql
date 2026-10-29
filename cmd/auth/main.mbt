@@ -58,8 +58,20 @@ async fn run() -> Unit {
   let metadata : Array[@flight.Metadata] = [
     { name: "authorization", value: "Bearer demo-token", },
   ]
+  let missing_keys = try {
+    let _ = client.primary_keys("orders")
+    false
+  } catch {
+    @flight.FlightError::Rpc(16, _) => true
+    _ => false
+  }
+  guard missing_keys else {
+    fail("primary key discovery accepted missing credentials")
+  }
   guard client.db_schemas(metadata~).length() == 3 &&
-    client.tables(metadata~).length() == 4 else {
+    client.tables(metadata~).length() == 4 &&
+    client.table_types(metadata~).length() == 2 &&
+    client.primary_keys("orders", metadata~).length() == 2 else {
     fail("authenticated discovery failed")
   }
   println(

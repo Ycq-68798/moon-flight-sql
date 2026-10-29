@@ -59,6 +59,7 @@ jobs:
             fi
           }
           trap 'stop_ipv6; stop_server' EXIT
+          python tests/server.py --port 0 --token demo-token --self-test
           start_server
           moon run cmd/main --target native
           moon run cmd/catalogs --target native
@@ -114,6 +115,7 @@ jobs:
           stop_server
           start_server --multi
           moon run cmd/multi --target native
+          moon run cmd/discovery_multi --target native
           stop_server
           start_server --token demo-token
           moon run cmd/auth --target native

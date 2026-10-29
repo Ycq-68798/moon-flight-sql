@@ -67,5 +67,29 @@ async fn run() -> Unit {
   guard client.tables(table_pattern="").is_empty() else {
     fail("empty table pattern presence was lost")
   }
-  println("PASS: schema and table discovery, presence, filters and schema IPC")
+  guard client.table_types() is ["TABLE", "VIEW"] else {
+    fail("wrong table types")
+  }
+  let keys = client.primary_keys("orders")
+  guard keys.length() == 2 &&
+    keys[0].column_name == "order_id" &&
+    keys[0].key_sequence == 1 &&
+    keys[1].column_name == "region" &&
+    keys[1].key_sequence == 2 &&
+    keys[0].key_name == Some("orders_pk") else {
+    fail("wrong primary keys")
+  }
+  let local_keys = client.primary_keys("local_tbl", catalog="", schema="")
+  guard local_keys.length() == 1 &&
+    local_keys[0].catalog_name is None &&
+    local_keys[0].schema_name is None &&
+    local_keys[0].key_name is None else {
+    fail("empty primary key catalog or schema presence lost")
+  }
+  guard client.primary_keys("orders", catalog="", schema="").is_empty() &&
+    client.primary_keys("orders", catalog="main", schema="public").length() == 2 &&
+    client.primary_keys("missing").is_empty() else {
+    fail("primary key filters failed")
+  }
+  println("PASS: schema, table, type and primary key discovery")
 }
