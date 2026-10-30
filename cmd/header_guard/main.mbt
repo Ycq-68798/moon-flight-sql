@@ -29,5 +29,18 @@ async fn run() -> Unit {
     _ => false
   }
   guard limited else { fail("response headers bypassed query budget") }
-  println("PASS: repeated headers and oversized header frame rejected")
+  for port in [8819, 8820, 8821, 8822] {
+    let client = @flight.Client::connect("127.0.0.1", port)
+    defer client.close()
+    let rejected = try {
+      let _ = client.query("SELECT 1")
+      false
+    } catch {
+      @flight.FlightError::Protocol(_) => port == 8819 || port == 8822
+      @flight.FlightError::Rpc(2, _) => port == 8820 || port == 8821
+      _ => false
+    }
+    guard rejected else { fail("invalid response status was accepted") }
+  }
+  println("PASS: malformed and oversized response headers rejected")
 }

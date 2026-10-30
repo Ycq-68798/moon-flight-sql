@@ -208,7 +208,7 @@ test "HTTP2 response guard accepts control frames and rejects unexpected streams
   f.check(
     @http2.Frame::Headers(
       stream_id=1,
-      fragment=b"",
+      fragment=b"\x88",
       end_stream=false,
       end_headers=false,
       priority=None,
@@ -364,6 +364,200 @@ test "response data before headers is rejected" {
     _ => false
   }
   assert_true(rejected)
+}
+
+///|
+fn check_response_headers(
+  guarder : FrameGuard,
+  block : Bytes,
+  end_stream : Bool,
+) -> Unit raise FlightError {
+  guarder.check(
+    @http2.Frame::Headers(
+      stream_id=guarder.id,
+      fragment=block,
+      end_stream~,
+      end_headers=true,
+      priority=None,
+      padding=0,
+    ),
+  )
+}
+
+///|
+test "response guard rejects invalid grpc status values and placement" {
+  let invalid : Array[Bytes] = [
+    b"", b"x", b"0x", b"00", b"01", b"-1", b"1234567890",
+  ]
+  for value in invalid {
+    let encoder = @hpack.Encoder::new()
+    let guarder = FrameGuard::new(1)
+    check_response_headers(
+      guarder,
+      encoder.encode([{ name: b":status", value: b"200", }]),
+      false,
+    )
+    let rejected = try {
+      check_response_headers(
+        guarder,
+        encoder.encode([{ name: b"grpc-status", value, }]),
+        true,
+      )
+      false
+    } catch {
+      FlightError::Protocol(_) => true
+      _ => false
+    }
+    assert_true(rejected)
+  }
+  let encoder = @hpack.Encoder::new()
+  let duplicate = FrameGuard::new(1)
+  let rejected = try {
+    check_response_headers(
+      duplicate,
+      encoder.encode([
+        { name: b":status", value: b"200", },
+        { name: b"grpc-status", value: b"0", },
+        { name: b"grpc-status", value: b"0", },
+      ]),
+      true,
+    )
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(rejected)
+  let premature = FrameGuard::new(1)
+  let rejected = try {
+    check_response_headers(
+      premature,
+      @hpack.Encoder::new().encode([
+        { name: b":status", value: b"200", },
+        { name: b"grpc-status", value: b"0", },
+      ]),
+      false,
+    )
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(rejected)
+}
+
+///|
+test "response guard rejects missing or repeated HTTP status" {
+  let cases : Array[Array[@header.Header]] = [
+    [{ name: b"content-type", value: b"application/grpc", }],
+    [{ name: b":status", value: b"200", }, { name: b":status", value: b"500", }],
+  ]
+  for headers in cases {
+    let rejected = try {
+      check_response_headers(
+        FrameGuard::new(1),
+        @hpack.Encoder::new().encode(headers),
+        false,
+      )
+      false
+    } catch {
+      FlightError::Protocol(_) => true
+      _ => false
+    }
+    assert_true(rejected)
+  }
+  let encoder = @hpack.Encoder::new()
+  let guarder = FrameGuard::new(1)
+  check_response_headers(
+    guarder,
+    encoder.encode([{ name: b":status", value: b"500", }]),
+    false,
+  )
+  let rejected = try {
+    check_response_headers(
+      guarder,
+      encoder.encode([
+        { name: b":status", value: b"200", },
+        { name: b"grpc-status", value: b"0", },
+      ]),
+      true,
+    )
+    false
+  } catch {
+    FlightError::Protocol(_) => true
+    _ => false
+  }
+  assert_true(rejected)
+  for value in [b"", b"20", b"0200", b"20x", b"600", b"200000000000"] {
+    let rejected = try {
+      check_response_headers(
+        FrameGuard::new(1),
+        @hpack.Encoder::new().encode([{ name: b":status", value, }]),
+        true,
+      )
+      false
+    } catch {
+      FlightError::Protocol(_) => true
+      _ => false
+    }
+    assert_true(rejected)
+  }
+}
+
+///|
+test "response HPACK context survives calls and split trailer blocks" {
+  let encoder = @hpack.Encoder::new()
+  let decoder = @hpack.Decoder::new()
+  for id in [1, 3] {
+    let guarder = FrameGuard::new(id, decoder~)
+    let initial = encoder.encode([
+      { name: b":status", value: b"200", },
+      { name: b"x-long-response-metadata", value: b"reused-value", },
+    ])
+    check_response_headers(guarder, initial, false)
+    let trailers = encoder.encode([{ name: b"grpc-status", value: b"0", }])
+    guarder.check(
+      @http2.Frame::Headers(
+        stream_id=id,
+        fragment=trailers[0:1].to_owned(),
+        end_stream=true,
+        end_headers=false,
+        priority=None,
+        padding=0,
+      ),
+    )
+    guarder.check(
+      @http2.Frame::Continuation(
+        stream_id=id,
+        fragment=trailers[1:].to_owned(),
+        end_headers=true,
+      ),
+    )
+  }
+}
+
+///|
+test "HTTP failure cannot be overridden by grpc success" {
+  validate_success_status(b"200", 0)
+  validate_success_status(b"503", 14)
+  let missing = try {
+    validate_success_status(b"200", -1)
+    false
+  } catch {
+    FlightError::Rpc(2, "missing gRPC status") => true
+    _ => false
+  }
+  assert_true(missing)
+  for status in [b"", b"500", b"0200", b"200bad"] {
+    let rejected = try {
+      validate_success_status(status, 0)
+      false
+    } catch {
+      FlightError::Rpc(2, _) => true
+      _ => false
+    }
+    assert_true(rejected)
+  }
 }
 
 ///|

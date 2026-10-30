@@ -89,6 +89,7 @@ fn MessageGuard::finish(self : MessageGuard) -> Unit raise FlightError {
 struct SafeChannel {
   conn : @socket.Tcp
   engine : @rpcclient.H2Client
+  response_decoder : @hpack.Decoder
   authority : String
   mut closed : Bool
   max_query_bytes : Int32
@@ -127,7 +128,14 @@ async fn SafeChannel::connect(
   for frame in engine.preface() {
     conn.write(frame.encode())
   }
-  { conn, engine, authority, closed: false, max_query_bytes, }
+  {
+    conn,
+    engine,
+    response_decoder: @hpack.Decoder::new(),
+    authority,
+    closed: false,
+    max_query_bytes,
+  }
 }
 
 ///|
@@ -135,13 +143,85 @@ async fn SafeChannel::connect(
 /// frames. Header continuations cannot be interleaved with any other frame.
 priv struct FrameGuard {
   id : Int32
+  decoder : @hpack.Decoder
+  header_block : @buffer.Buffer
   mut in_headers : Bool
   mut headers_seen : Bool
+  mut initial_headers : Bool
+  mut terminal_headers : Bool
 }
 
 ///|
-fn FrameGuard::new(id : Int32) -> FrameGuard {
-  { id, in_headers: false, headers_seen: false, }
+fn FrameGuard::new(
+  id : Int32,
+  decoder~ : @hpack.Decoder = @hpack.Decoder::new(),
+) -> FrameGuard {
+  {
+    id,
+    decoder,
+    header_block: @buffer.Buffer(),
+    in_headers: false,
+    headers_seen: false,
+    initial_headers: false,
+    terminal_headers: false,
+  }
+}
+
+///|
+/// Validate the gRPC status before the underlying decoder parses it as an Int.
+fn FrameGuard::finish_headers(self : FrameGuard) -> Unit raise FlightError {
+  let headers = self.decoder.decode(
+    self.header_block.to_bytes()[:],
+    limit=131072,
+  ) catch {
+    _ => raise FlightError::Protocol("invalid HTTP/2 header block")
+  }
+  self.header_block.reset()
+  let mut count = 0
+  let mut http_status_count = 0
+  for header in headers {
+    if !self.initial_headers &&
+      !header.name.is_empty() &&
+      header.name[0] == b':' {
+      raise FlightError::Protocol("pseudo-header in HTTP/2 trailers")
+    }
+    if header.name == b":status" {
+      http_status_count += 1
+      if !self.initial_headers || http_status_count > 1 {
+        raise FlightError::Protocol("invalid HTTP status placement or count")
+      }
+      if header.value.length() != 3 ||
+        header.value[0] < b'1' ||
+        header.value[0] > b'5' ||
+        header.value[1] < b'0' ||
+        header.value[1] > b'9' ||
+        header.value[2] < b'0' ||
+        header.value[2] > b'9' {
+        raise FlightError::Protocol("invalid HTTP status")
+      }
+    }
+    if header.name == b"grpc-status" {
+      count += 1
+      if !self.terminal_headers || count > 1 || header.value.is_empty() {
+        raise FlightError::Protocol("invalid gRPC status placement or count")
+      }
+      if header.value.length() > 1 && header.value[0] == b'0' {
+        raise FlightError::Protocol("invalid gRPC status")
+      }
+      // Cap the decimal representation to avoid integer overflow in MoonRPC.
+      if header.value.length() > 9 {
+        raise FlightError::Protocol("invalid gRPC status")
+      }
+      for byte in header.value {
+        if byte < b'0' || byte > b'9' {
+          raise FlightError::Protocol("invalid gRPC status")
+        }
+      }
+    }
+  }
+  if self.initial_headers && http_status_count != 1 {
+    raise FlightError::Protocol("missing HTTP status")
+  }
 }
 
 ///|
@@ -151,8 +231,15 @@ fn FrameGuard::check(
 ) -> Unit raise FlightError {
   if self.in_headers {
     match frame {
-      @http2.Frame::Continuation(stream_id~, end_headers~, ..) if stream_id ==
+      @http2.Frame::Continuation(stream_id~, end_headers~, fragment~) if stream_id ==
         self.id => {
+        self.header_block.write_bytes(fragment)
+        if self.header_block.length() > 131072 {
+          raise FlightError::Protocol("HTTP/2 header block exceeds limit")
+        }
+        if end_headers {
+          self.finish_headers()
+        }
         self.in_headers = !end_headers
         return
       }
@@ -160,15 +247,24 @@ fn FrameGuard::check(
     }
   }
   match frame {
-    @http2.Frame::Headers(stream_id~, end_headers~, end_stream~, ..) => {
+    @http2.Frame::Headers(stream_id~, end_headers~, end_stream~, fragment~, ..) => {
       if stream_id != self.id {
         raise FlightError::Protocol("unexpected HTTP/2 response stream")
       }
       if self.headers_seen && !end_stream {
         raise FlightError::Protocol("response trailers must end the stream")
       }
+      self.initial_headers = !self.headers_seen
       self.headers_seen = true
       self.in_headers = !end_headers
+      self.terminal_headers = end_stream
+      self.header_block.write_bytes(fragment)
+      if self.header_block.length() > 131072 {
+        raise FlightError::Protocol("HTTP/2 header block exceeds limit")
+      }
+      if end_headers {
+        self.finish_headers()
+      }
     }
     @http2.Frame::Data(stream_id~, ..) => {
       if stream_id != self.id {
@@ -211,7 +307,7 @@ async fn SafeChannel::pump(
   budget : QueryBudget,
 ) -> @rpcclient.CallReply {
   let validator = MessageGuard::new()
-  let frame_guard = FrameGuard::new(id)
+  let frame_guard = FrameGuard::new(id, decoder=self.response_decoder)
   while !self.engine.is_done(id) {
     let head = self.conn.read_exactly(9)
     let hdr = @http2.FrameHeader::decode(head)
@@ -235,10 +331,24 @@ async fn SafeChannel::pump(
     }
   }
   let reply = self.engine.reply(id)
+  validate_success_status(reply.status, reply.grpc_status)
   if reply.grpc_status == 0 {
     validator.finish()
   }
   reply
+}
+
+///|
+fn validate_success_status(
+  status : Bytes,
+  grpc_status : Int32,
+) -> Unit raise FlightError {
+  if grpc_status == -1 {
+    raise FlightError::Rpc(2, "missing gRPC status")
+  }
+  if grpc_status == 0 && status != b"200" {
+    raise FlightError::Rpc(2, "unexpected HTTP response status")
+  }
 }
 
 ///|

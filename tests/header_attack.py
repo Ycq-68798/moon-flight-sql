@@ -20,7 +20,7 @@ def frame(kind, flags, stream_id, body):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--mode", choices=("repeat", "budget"), required=True)
+    parser.add_argument("--mode", choices=("repeat", "budget", "invalid-grpc", "http-failure", "missing-grpc", "status-overwrite"), required=True)
     args = parser.parse_args()
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -41,9 +41,20 @@ def main():
             if args.mode == "repeat":
                 # Indexed HPACK :status: 200, then another non-final header block.
                 conn.sendall(frame(1, 4, 1, b"\x88") + frame(1, 4, 1, b"\x88"))
-            else:
+            elif args.mode == "budget":
                 # The frame length alone exceeds the deliberately small budget.
                 conn.sendall(frame(1, 4, 1, b"\x88" * 100))
+            else:
+                grpc = b"\x00\x0bgrpc-status\x01"
+                if args.mode == "invalid-grpc":
+                    response = frame(1, 4, 1, b"\x88") + frame(1, 5, 1, grpc + b"x")
+                elif args.mode == "http-failure":
+                    response = frame(1, 5, 1, b"\x8e" + grpc + b"0")
+                elif args.mode == "missing-grpc":
+                    response = frame(1, 5, 1, b"\x88")
+                else:
+                    response = frame(1, 4, 1, b"\x8e") + frame(1, 5, 1, b"\x88" + grpc + b"0")
+                conn.sendall(response)
             try:
                 while conn.recv(4096):
                     pass

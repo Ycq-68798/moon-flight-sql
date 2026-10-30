@@ -144,13 +144,29 @@ jobs:
           repeat_pid=$!
           python tests/header_attack.py --mode budget --port 8818 > header-budget.log 2>&1 &
           budget_pid=$!
-          trap 'kill "$repeat_pid" "$budget_pid" 2>/dev/null || true' EXIT
+          python tests/header_attack.py --mode invalid-grpc --port 8819 > header-invalid.log 2>&1 &
+          invalid_pid=$!
+          python tests/header_attack.py --mode http-failure --port 8820 > header-http.log 2>&1 &
+          http_pid=$!
+          python tests/header_attack.py --mode missing-grpc --port 8821 > header-missing.log 2>&1 &
+          missing_pid=$!
+          python tests/header_attack.py --mode status-overwrite --port 8822 > header-overwrite.log 2>&1 &
+          overwrite_pid=$!
+          trap 'kill "$repeat_pid" "$budget_pid" "$invalid_pid" "$http_pid" "$missing_pid" "$overwrite_pid" 2>/dev/null || true' EXIT
           for i in {1..100}; do
-            if grep -q ready header-repeat.log && grep -q ready header-budget.log; then break; fi
+            if grep -q ready header-repeat.log && grep -q ready header-budget.log && grep -q ready header-invalid.log && grep -q ready header-http.log && grep -q ready header-missing.log && grep -q ready header-overwrite.log; then break; fi
             sleep 0.1
           done
           grep -q ready header-repeat.log
           grep -q ready header-budget.log
+          grep -q ready header-invalid.log
+          grep -q ready header-http.log
+          grep -q ready header-missing.log
+          grep -q ready header-overwrite.log
           moon run cmd/header_guard --target native
           wait "$repeat_pid"
           wait "$budget_pid"
+          wait "$invalid_pid"
+          wait "$http_pid"
+          wait "$missing_pid"
+          wait "$overwrite_pid"
