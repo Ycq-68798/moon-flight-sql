@@ -58,7 +58,12 @@ jobs:
               ipv6_pid=""
             fi
           }
-          trap 'stop_ipv6; stop_server' EXIT
+          stop_deadline_peers() {
+            for pid in "${silent_pid:-}" "${deadline_pid:-}"; do
+              if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+            done
+          }
+          trap 'stop_deadline_peers; stop_ipv6; stop_server' EXIT
           python tests/server.py --port 0 --token demo-token --self-test
           start_server
           moon run cmd/main --target native
@@ -136,7 +141,21 @@ jobs:
           moon run cmd/large --target native
           stop_server
           start_server --delay 1
+          python tests/deadline_peer.py --mode silent --port 8823 > deadline-silent.log 2>&1 &
+          silent_pid=$!
+          python tests/deadline_peer.py --mode server-deadline --port 8824 > deadline-remote.log 2>&1 &
+          deadline_pid=$!
+          for i in {1..100}; do
+            if grep -q ready deadline-silent.log && grep -q ready deadline-remote.log; then break; fi
+            sleep 0.1
+          done
+          grep -q ready deadline-silent.log
+          grep -q ready deadline-remote.log
           moon run cmd/timeout --target native
+          wait "$silent_pid"
+          wait "$deadline_pid"
+          silent_pid=""
+          deadline_pid=""
       - name: Reject malformed and oversized response headers
         shell: bash
         run: |

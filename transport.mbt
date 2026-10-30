@@ -85,7 +85,7 @@ fn MessageGuard::finish(self : MessageGuard) -> Unit raise FlightError {
 
 ///|
 /// Sequential h2c adapter using MoonRPC's HTTP/2 engine, with a pre-decoder
-/// message guard. Failed or timed-out calls invalidate the whole connection.
+/// message guard. Transport failures and local timeouts invalidate the connection.
 struct SafeChannel {
   conn : @socket.Tcp
   engine : @rpcclient.H2Client

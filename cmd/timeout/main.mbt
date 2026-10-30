@@ -5,7 +5,7 @@ fn main {
 
 ///|
 async fn run() -> Unit {
-  let client = @flight.Client::connect("127.0.0.1", 8815)
+  let client = @flight.Client::connect("127.0.0.1", 8823)
   defer client.close()
   let sql = "SELECT id, name FROM items ORDER BY id"
   let timed_out = try {
@@ -24,6 +24,24 @@ async fn run() -> Unit {
     _ => false
   }
   guard closed else { fail("timed-out connection must be closed") }
+  let server_deadline = @flight.Client::connect("127.0.0.1", 8824)
+  defer server_deadline.close()
+  let remote_deadline = try {
+    let _ = server_deadline.query(sql, timeout_ms=3000)
+    false
+  } catch {
+    @flight.FlightError::Rpc(4, _) => true
+    _ => false
+  }
+  guard remote_deadline else { fail("expected server deadline status") }
+  let reused = try {
+    let _ = server_deadline.query(sql, timeout_ms=3000)
+    false
+  } catch {
+    @flight.FlightError::Rpc(13, _) => true
+    _ => false
+  }
+  guard reused else { fail("completed server deadline must allow reuse") }
   let another = @flight.Client::connect("127.0.0.1", 8815)
   defer another.close()
   @async.with_task_group() <| group => {
@@ -42,5 +60,7 @@ async fn run() -> Unit {
     }
     guard rejected else { fail("concurrent query must be rejected") }
   }
-  println("PASS: timeout closed connection; concurrent query rejected")
+  println(
+    "PASS: local timeout closed connection; server deadline allowed reuse; concurrent query rejected",
+  )
 }
